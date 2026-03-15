@@ -154,12 +154,10 @@ class MarketDataEngine extends EventEmitter {
     
     // Initialize CCXT exchange
     try {
-      this.exchange = new ccxt.bingx({
-        enableRateLimit: true,
-        options: {
-          defaultType: CONFIG.EXCHANGE.DEFAULT_TYPE,
-        }
-      });
+      this.exchange = new ccxt.binance({
+  enableRateLimit: true,
+  options: { defaultType: "future" } // USDT-M futures
+});
       
       if (CONFIG.EXCHANGE.SANDBOX) {
         this.exchange.setSandboxMode(true);
