@@ -1276,6 +1276,7 @@ class SignalAlphaTelegramBot {
       await this.sendDashboard(ctx);
     });
 
+    
     this.bot.action('GET_SIGNAL', async (ctx) => {
       await ctx.answerCbQuery('Analyzing...');
       await ctx.reply('🔍 Scanning top volume pairs for A+ setups...');
@@ -1286,4 +1287,231 @@ class SignalAlphaTelegramBot {
         const signal = await this.generator.generateSignal(symbol);
         if (signal) {
           await this.sendSignal(ctx.chat.id, signal);
+          return;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      
+      await ctx.reply('❌ No high-confidence setups found. Check back in 15 minutes.');
+    });
+
+    this.bot.action('LIVE_SCAN', async (ctx) => {
+      await ctx.answerCbQuery();
+      if (!ctx.isAdmin) {
+        return ctx.reply('⛔ Auto-scanning is admin-controlled. Use /signal for manual scan.');
+      }
+      await this.generator.startContinuousScanning();
+      await ctx.reply('🔥 Live scanning activated! A+ signals will appear automatically.');
+    });
+
+    this.bot.action('SETTINGS', async (ctx) => {
+      await ctx.answerCbQuery();
+      await ctx.reply('⚙️ *Settings*', {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('Min Confidence: 70%', 'SET_CONF_70')],
+          [Markup.button.callback('Min Confidence: 80%', 'SET_CONF_80')],
+          [Markup.button.callback('Min Confidence: 85%', 'SET_CONF_85')],
+          [Markup.button.callback('🔙 Back', 'MAIN_MENU')]
+        ])
+      });
+    });
+
+    this.bot.action(/SET_CONF_(\d+)/, async (ctx) => {
+      const conf = ctx.match[1];
+      this.userSettings.set(ctx.from.id, { minConfidence: parseInt(conf) });
+      await ctx.answerCbQuery(`Min confidence set to ${conf}%`);
+      await ctx.reply(`✅ Minimum confidence threshold: ${conf}%`);
+    });
+
+    this.bot.action('MAIN_MENU', async (ctx) => {
+      await ctx.answerCbQuery();
+      await ctx.reply('🏠 *Main Menu*', {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
+          [Markup.button.callback('📈 Live Scan', 'LIVE_SCAN'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
+        ])
+      });
+    });
+  }
+
+  async sendDashboard(ctx) {
+    const progressBar = (pct) => '█'.repeat(Math.round(pct / 10)) + '░'.repeat(10 - Math.round(pct / 10));
+    const current = CONFIG.CHALLENGE.CURRENT_CAPITAL;
+    const progress = ((current - CONFIG.CHALLENGE.START_CAPITAL) / 
+                     (CONFIG.CHALLENGE.TARGET - CONFIG.CHALLENGE.START_CAPITAL) * 100);
+
+    const text = [
+      '🎯 *SIGNALALPHA DASHBOARD*',
+      '',
+      `💰 Capital: $${current.toFixed(2)} / $${CONFIG.CHALLENGE.TARGET}`,
+      `📈 Progress: ${Math.max(0, progress).toFixed(1)}% ${progressBar(progress)}`,
+      `📅 Challenge: Day 1/${CONFIG.CHALLENGE.DAYS}`,
+      '',
+      '*System Status:*',
+      `🔍 Live Scan: ${this.generator.isScanning ? '🟢 ACTIVE' : '⚪ IDLE'}`,
+      `📊 Markets: ${this.marketData.perpetualMarkets?.length || 0} tracked`,
+      `🎯 Signals Today: 0/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`,
+      '',
+      '*Risk Limits:*',
+      `Daily Loss: ${CONFIG.RISK.DAILY_LOSS_LIMIT_PCT}% ($${(CONFIG.CHALLENGE.START_CAPITAL * CONFIG.RISK.DAILY_LOSS_LIMIT_PCT / 100).toFixed(2)})`,
+      `Consecutive Losses: 0/${CONFIG.RISK.MAX_CONSECUTIVE_LOSSES}`,
+      '',
+      `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK})`
+    ].join('\n');
+
+    const buttons = ctx.isAdmin ? [
+      [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('🔥 Start Live Scan', 'LIVE_SCAN')],
+      [Markup.button.callback('⏹️ Stop Scan', 'STOP_SCAN'), Markup.button.callback('📊 Stats', 'STATS')],
+      [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
+    ] : [
+      [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('📊 Stats', 'STATS')],
+      [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
+    ];
+
+    await ctx.reply(text, {
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      ...Markup.inlineKeyboard(buttons)
+    });
+  }
+
+  async sendSignal(chatId, signal) {
+    const text = [
+      '╔══════════════════════════════════════════════════════════════╗',
+      '║           🎯 SIGNALALPHA CRYPTO SIGNAL                       ║',
+      '║              [$10 → $100 Challenge]                          ║',
+      '╚══════════════════════════════════════════════════════════════╝',
+      '',
+      '📊 *MARKET SNAPSHOT*',
+      `Asset: ${signal.symbol}`,
+      `Timeframe: 15M / 1H / 4H`,
+      `Generated: ${new Date(signal.timestamp).toISOString().replace('T', ' ').substr(0, 16)} UTC`,
+      `Valid Until: ${new Date(signal.validUntil).toISOString().replace('T', ' ').substr(0, 16)} UTC`,
+      '',
+      '🎯 *TRADE DIRECTIVE*',
+      `Direction: ${signal.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}`,
+      `Confidence: ${signal.confidence.score}% (TIER: ${signal.confidence.tier})`,
+      `Strategy: ${signal.strategy} [${signal.quality}]`,
+      '',
+      '💰 *ENTRY PARAMETERS*',
+      `Entry Zone: $${signal.entry.zone.min.toFixed(4)} - $${signal.entry.zone.max.toFixed(4)}`,
+      `Stop Loss: $${signal.stopLoss.toFixed(4)}`,
+      `Take Profit: $${signal.takeProfit.toFixed(4)}`,
+      `Risk/Reward: 1:${signal.riskReward}`,
+      '',
+      '⚙️ *POSITION DETAILS*',
+      `Risk: ${signal.position.riskPct}% ($${signal.position.riskAmount})`,
+      `Leverage: ${signal.position.leverage}x`,
+      `Position Size: $${signal.position.positionSize}`,
+      `Margin Required: $${signal.position.margin}`,
+      `Est. Profit: $${signal.position.estProfit} | Est. Loss: $${signal.position.estLoss}`,
+      '',
+      '📈 *TECHNICAL RATIONALE*',
+      `• Trend: ${signal.analysis.trend} (Aligned: ${signal.analysis.trendAlignment ? 'Yes' : 'No'})`,
+      `• Momentum: RSI ${signal.analysis.rsi}, MACD ${signal.analysis.macdDirection}`,
+      `• Volume: ${signal.analysis.volumeRatio}x average (${signal.analysis.volumeTrend})`,
+      `• Support: $${signal.analysis.support} (${signal.analysis.supportTouches} touches)`,
+      `• Resistance: $${signal.analysis.resistance} (${signal.analysis.resistanceTouches} touches)`,
+      '',
+      '🎯 *EXECUTION PLAN*',
+      `1. ${signal.execution.step1}`,
+      `2. ${signal.execution.step2}`,
+      `3. ${signal.execution.step3}`,
+      '',
+      '📊 *CHALLENGE TRACKER*',
+      `Start: $${signal.challenge.startCapital}`,
+      `Current: $${signal.challenge.currentCapital} (${((current - 10) / 10 * 100).toFixed(1)}%)`,
+      `Target: $${signal.challenge.target}`,
+      `Progress: ${signal.challenge.progress}% ${'█'.repeat(Math.round(signal.challenge.progress / 10))}${'░'.repeat(10 - Math.round(signal.challenge.progress / 10))}`,
+      `Days Left: ${signal.challenge.daysLeft}`,
+      '',
+      '═══════════════════════════════════════════════════════════════',
+      `🔗 EXECUTE ON BINGX: ${CONFIG.REFERRAL.LINK}`,
+      `🎁 REFERRAL CODE: ${CONFIG.REFERRAL.CODE}`,
+      '═══════════════════════════════════════════════════════════════',
+      '',
+      '⚡ *Disclaimer:* Educational analysis only. Crypto trading carries substantial risk.'
+    ].join('\n');
+
+    await this.bot.telegram.sendMessage(chatId, text, {
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('✅ Signal Taken', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skipped', `SKIPPED_${signal.id}`)],
+        [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+      ])
+    });
+
+    // Start monitoring this signal
+    this.generator.monitorSignal(signal.id);
+  }
+
+  async broadcastSignal(signal) {
+    // Send to all admin users
+    for (const adminId of CONFIG.ADMIN_IDS) {
+      try {
+        await this.sendSignal(adminId, signal);
+      } catch (err) {
+        logger.error(`Failed to send to admin ${adminId}:`, err.message);
+      }
+    }
+  }
+
+  async handleSignalClose(data) {
+    const { signal, result, price } = data;
+    logger.info(`Signal closed: ${signal.symbol} ${result} @ $${price}`);
     
+    await this.tradeLogger.log('SIGNAL_CLOSED', {
+      signalId: signal.id,
+      symbol: signal.symbol,
+      result,
+      exitPrice: price,
+      pnl: result === 'take_profit' ? signal.position.estProfit : -signal.position.estLoss,
+    });
+  }
+
+  async start() {
+    // Initialize market data
+    await this.marketData.initialize();
+    
+    // Launch bot
+    await this.bot.launch();
+    logger.info('🚀 SignalAlpha Bot LIVE - Real-time scanning active');
+    
+    // Start continuous scanning if auto-start enabled
+    if (process.env.AUTO_START_SCAN === 'true') {
+      this.generator.startContinuousScanning();
+    }
+    
+    // Graceful shutdown
+    process.once('SIGINT', () => {
+      this.generator.stopScanning();
+      this.bot.stop('SIGINT');
+    });
+    process.once('SIGTERM', () => {
+      this.generator.stopScanning();
+      this.bot.stop('SIGTERM');
+    });
+  }
+}
+
+// ==========================================
+// MAIN ENTRY
+// ==========================================
+
+async function main() {
+  if (!CONFIG.BOT_TOKEN) {
+    console.error('❌ BOT_TOKEN required in .env');
+    process.exit(1);
+  }
+
+  const bot = new SignalAlphaTelegramBot();
+  await bot.start();
+}
+
+main().catch(err => {
+  logger.error('Fatal error:', err);
+  process.exit(1);
+});
