@@ -154,11 +154,11 @@ class MarketDataEngine extends EventEmitter {
     
     // Initialize CCXT exchange
     try {
-       this.exchange = new ccxt.bybit({
+       this.exchange = new ccxt.bitget({
   enableRateLimit: true,
   options: { defaultType: "future" }
 });
-      
+       
       if (CONFIG.EXCHANGE.SANDBOX) {
         this.exchange.setSandboxMode(true);
         console.log('🔒 Sandbox mode enabled');
