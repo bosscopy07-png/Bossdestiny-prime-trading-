@@ -1,6 +1,7 @@
 {
   "name": "signalalpha-bot",
   "version": "1.0.0",
+  "type": "module",
   "description": "AI Crypto Signal Bot - $10 → $100 Challenge",
   "main": "signalalpha-live-trading-bot.js",
   "scripts": {
