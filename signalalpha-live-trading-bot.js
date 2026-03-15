@@ -53,13 +53,11 @@ const CONFIG = {
     VOLUME_THRESHOLD: 1.5, // 150% of average
   },
   
-  // Exchange (BingX via CCXT)
+  // Exchange Configuration
   EXCHANGE: {
-    ID: 'bingx',
-    API_KEY: process.env.BINGX_API_KEY,
-    API_SECRET: process.env.BINGX_API_SECRET,
     SANDBOX: process.env.SANDBOX === 'true',
     DEFAULT_TYPE: 'swap', // perpetual futures
+    ID: 'bingx', // Default exchange
   },
   
   // Market Data
@@ -80,6 +78,10 @@ const CONFIG = {
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
 };
 
+console.log('✅ CONFIG loaded successfully');
+console.log(`📊 Challenge: $${CONFIG.CHALLENGE.START_CAPITAL} → $${CONFIG.CHALLENGE.TARGET}`);
+console.log(`👥 Admin IDs: ${CONFIG.ADMIN_IDS.length > 0 ? CONFIG.ADMIN_IDS.join(', ') : 'None set'}`);
+
 // ==========================================
 // ADVANCED LOGGER WITH TRADE LOGGING
 // ==========================================
@@ -96,10 +98,13 @@ const logger = Pino({
   },
 });
 
+console.log('✅ Logger initialized');
+
 // File logger for trade history
 class TradeLogger {
   constructor(filename = 'trades.log') {
     this.filename = filename;
+    console.log(`📁 TradeLogger initialized: ${filename}`);
   }
 
   async log(type, data) {
@@ -111,21 +116,28 @@ class TradeLogger {
     
     try {
       await fs.appendFile(this.filename, JSON.stringify(entry) + '\n');
+      console.log(`📝 Logged: ${type} - ${data.symbol || 'system'}`);
     } catch (err) {
       logger.error('Failed to log trade:', err);
+      console.error(`❌ Failed to write to ${this.filename}:`, err.message);
     }
   }
 
   async getRecentTrades(hours = 24) {
+    console.log(`📖 Reading recent trades from last ${hours}h...`);
     try {
       const content = await fs.readFile(this.filename, 'utf8');
       const lines = content.trim().split('\n');
       const cutoff = Date.now() - (hours * 3600000);
       
-      return lines
+      const trades = lines
         .map(line => JSON.parse(line))
         .filter(trade => new Date(trade.timestamp).getTime() > cutoff);
-    } catch {
+      
+      console.log(`✅ Found ${trades.length} trades in last ${hours}h`);
+      return trades;
+    } catch (err) {
+      console.warn(`⚠️ Could not read ${this.filename}:`, err.message);
       return [];
     }
   }
@@ -138,11 +150,26 @@ class TradeLogger {
 class MarketDataEngine extends EventEmitter {
   constructor() {
     super();
+    console.log('🏗️  Initializing MarketDataEngine...');
     
-    
-    
-    if (CONFIG.EXCHANGE.SANDBOX) {
-      this.exchange.setSandboxMode(true);
+    // Initialize CCXT exchange
+    try {
+      this.exchange = new ccxt.bingx({
+        enableRateLimit: true,
+        options: {
+          defaultType: CONFIG.EXCHANGE.DEFAULT_TYPE,
+        }
+      });
+      
+      if (CONFIG.EXCHANGE.SANDBOX) {
+        this.exchange.setSandboxMode(true);
+        console.log('🔒 Sandbox mode enabled');
+      }
+      
+      console.log(`✅ Exchange initialized: ${CONFIG.EXCHANGE.ID}`);
+    } catch (err) {
+      console.error('❌ Failed to initialize exchange:', err.message);
+      throw err;
     }
 
     this.priceCache = new Map();
@@ -151,42 +178,60 @@ class MarketDataEngine extends EventEmitter {
     this.fundingRates = new Map();
     this.wsConnections = new Map();
     this.isRunning = false;
+    this.perpetualMarkets = [];
+    
+    console.log('✅ MarketDataEngine constructed');
   }
 
   async initialize() {
+    console.log('🚀 Starting MarketDataEngine initialization...');
     try {
+      console.log('📡 Loading markets from exchange...');
       await this.exchange.loadMarkets();
-      logger.info(`Loaded ${Object.keys(this.exchange.markets).length} markets`);
-      
+      const marketCount = Object.keys(this.exchange.markets).length;
+      logger.info(`Loaded ${marketCount} markets`);
+      console.log(`✅ Loaded ${marketCount} markets`);
+
       // Filter USDT perpetual futures
+      console.log('🔍 Filtering perpetual markets...');
       this.perpetualMarkets = Object.values(this.exchange.markets)
         .filter(m => m.type === 'swap' && m.quote === 'USDT' && m.active)
         .map(m => m.symbol);
       
       logger.info(`Found ${this.perpetualMarkets.length} active perpetual markets`);
-      
+      console.log(`✅ Found ${this.perpetualMarkets.length} perpetual markets`);
+      console.log(`📊 Top markets: ${this.perpetualMarkets.slice(0, 5).join(', ')}...`);
+
       // Start WebSocket feeds for major pairs
+      console.log('🔌 Starting WebSocket feeds...');
       this.startWebSocketFeeds();
       
       // Start polling for OHLCV
+      console.log('📈 Starting OHLCV polling...');
       this.startOhlcvPolling();
       
       this.isRunning = true;
+      console.log('🎯 MarketDataEngine fully initialized and running');
     } catch (err) {
       logger.error('Failed to initialize market data:', err);
+      console.error('❌ MarketDataEngine initialization failed:', err.message);
       throw err;
     }
   }
 
   startWebSocketFeeds() {
     const majorPairs = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt', 'dogeusdt'];
+    console.log(`🔌 Starting WebSocket connections for ${majorPairs.length} pairs...`);
     
     for (const pair of majorPairs) {
       const wsUrl = `${CONFIG.DATA.BINANCE_FUTURES_WS}/${pair}@kline_1m`;
+      console.log(`🔗 Connecting to ${wsUrl}...`);
+      
       const ws = new WebSocket(wsUrl);
       
       ws.on('open', () => {
         logger.info(`WebSocket connected: ${pair}`);
+        console.log(`✅ WebSocket connected: ${pair}`);
       });
       
       ws.on('message', (data) => {
@@ -207,21 +252,28 @@ class MarketDataEngine extends EventEmitter {
       
       ws.on('error', (err) => {
         logger.warn(`WebSocket error for ${pair}:`, err.message);
+        console.error(`❌ WebSocket error for ${pair}:`, err.message);
       });
       
       ws.on('close', () => {
         logger.warn(`WebSocket closed for ${pair}, reconnecting...`);
+        console.warn(`⚠️ WebSocket closed for ${pair}, will reconnect in 5s...`);
         setTimeout(() => this.startWebSocketFeeds(), 5000);
       });
       
       this.wsConnections.set(pair, ws);
     }
+    console.log('✅ All WebSocket connections initiated');
   }
 
   startOhlcvPolling() {
+    console.log('⏱️  Starting OHLCV polling (10s interval)...');
     // Poll OHLCV every 10 seconds for active timeframes
     setInterval(async () => {
-      for (const symbol of this.perpetualMarkets.slice(0, 20)) { // Top 20 by volume
+      const symbolsToPoll = this.perpetualMarkets.slice(0, 20);
+      console.log(`🔄 Polling OHLCV for ${symbolsToPoll.length} symbols...`);
+      
+      for (const symbol of symbolsToPoll) {
         for (const timeframe of CONFIG.TA.TIMEFRAMES) {
           try {
             const ohlcv = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, 100);
@@ -236,7 +288,9 @@ class MarketDataEngine extends EventEmitter {
           }
         }
       }
+      console.log('✅ OHLCV poll cycle complete');
     }, 10000);
+    console.log('✅ OHLCV polling active');
   }
 
   async fetchOHLCV(symbol, timeframe, limit = 100) {
@@ -248,11 +302,13 @@ class MarketDataEngine extends EventEmitter {
     }
 
     try {
+      console.log(`📊 Fetching OHLCV: ${symbol} ${timeframe}`);
       const data = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
       this.ohlcvCache.set(key, { data, timestamp: Date.now() });
       return data;
     } catch (err) {
       logger.error(`Failed to fetch OHLCV for ${symbol}:`, err.message);
+      console.error(`❌ OHLCV fetch failed for ${symbol}:`, err.message);
       return null;
     }
   }
@@ -267,10 +323,12 @@ class MarketDataEngine extends EventEmitter {
 
     // Fallback to REST
     try {
+      console.log(`💰 Fetching current price for ${symbol} (REST fallback)`);
       const ticker = await this.exchange.fetchTicker(symbol);
       return ticker.last;
     } catch (err) {
       logger.error(`Failed to get price for ${symbol}:`, err.message);
+      console.error(`❌ Price fetch failed for ${symbol}:`, err.message);
       return null;
     }
   }
@@ -307,6 +365,7 @@ class MarketDataEngine extends EventEmitter {
   }
 
   async getTopVolumeSymbols(count = 10) {
+    console.log(`🏆 Fetching top ${count} volume symbols...`);
     try {
       const tickers = await this.exchange.fetchTickers();
       const sorted = Object.values(tickers)
@@ -315,8 +374,10 @@ class MarketDataEngine extends EventEmitter {
         .slice(0, count)
         .map(t => t.symbol);
       
+      console.log(`✅ Top volumes: ${sorted.join(', ')}`);
       return sorted;
     } catch (err) {
+      console.error('❌ Failed to fetch top volumes:', err.message);
       return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT'];
     }
   }
@@ -329,6 +390,7 @@ class MarketDataEngine extends EventEmitter {
 class InstitutionalTA {
   constructor(marketData) {
     this.marketData = marketData;
+    console.log('📐 InstitutionalTA initialized');
   }
 
   // EMA Calculation with proper smoothing
@@ -785,11 +847,15 @@ class RealTimeSignalGenerator extends EventEmitter {
     this.activeSignals = new Map();
     this.tradeLogger = new TradeLogger();
     this.isScanning = false;
+    
+    console.log('🎯 RealTimeSignalGenerator initialized');
   }
 
   async analyzeSymbol(symbol) {
+    console.log(`🔍 Analyzing ${symbol}...`);
     try {
       // Fetch multi-timeframe data
+      console.log(`📊 Fetching multi-timeframe data for ${symbol}...`);
       const [m5, m15, h1, h4] = await Promise.all([
         this.marketData.fetchOHLCV(symbol, '5m', 100),
         this.marketData.fetchOHLCV(symbol, '15m', 100),
@@ -797,18 +863,29 @@ class RealTimeSignalGenerator extends EventEmitter {
         this.marketData.fetchOHLCV(symbol, '4h', 50),
       ]);
 
-      if (!m5 || !m15 || !h1 || !h4) return null;
+      if (!m5 || !m15 || !h1 || !h4) {
+        console.log(`⚠️ Insufficient data for ${symbol}`);
+        return null;
+      }
+      console.log(`✅ Data fetched for ${symbol}`);
 
       const currentPrice = await this.marketData.getCurrentPrice(symbol);
-      if (!currentPrice) return null;
+      if (!currentPrice) {
+        console.log(`⚠️ Could not get current price for ${symbol}`);
+        return null;
+      }
+      console.log(`💰 Current price for ${symbol}: $${currentPrice}`);
 
       // Volume check
       const volume24h = await this.marketData.get24hVolume(symbol);
       if (volume24h < CONFIG.DATA.MIN_VOLUME_USD) {
+        console.log(`⚠️ Insufficient volume for ${symbol}: $${volume24h}`);
         return null; // Insufficient liquidity
       }
+      console.log(`📈 Volume OK for ${symbol}: $${volume24h}`);
 
       // Technical Analysis on each timeframe
+      console.log(`📐 Running technical analysis on ${symbol}...`);
       const analysis5m = this.runAnalysis(m5);
       const analysis15m = this.runAnalysis(m15);
       const analysis1h = this.runAnalysis(h1);
@@ -835,14 +912,22 @@ class RealTimeSignalGenerator extends EventEmitter {
         fibonacci: primary.fibonacci,
       });
 
-      if (!setup) return null;
+      if (!setup) {
+        console.log(`⚠️ No strategy detected for ${symbol}`);
+        return null;
+      }
+      console.log(`🎯 Strategy detected for ${symbol}: ${setup.type} ${setup.direction}`);
 
       // Calculate R:R
       const risk = Math.abs(setup.entry - setup.stop);
       const reward = Math.abs(setup.target - setup.entry);
       const riskReward = reward / risk;
 
-      if (riskReward < CONFIG.RISK.MIN_RR) return null;
+      if (riskReward < CONFIG.RISK.MIN_RR) {
+        console.log(`⚠️ R:R too low for ${symbol}: ${riskReward.toFixed(2)}`);
+        return null;
+      }
+      console.log(`✅ R:R acceptable: ${riskReward.toFixed(2)}`);
 
       // Full analysis object
       const fullAnalysis = {
@@ -858,7 +943,9 @@ class RealTimeSignalGenerator extends EventEmitter {
       };
 
       // Confidence scoring
+      console.log(`🎲 Calculating confidence score for ${symbol}...`);
       const confidence = this.confidence.calculate(fullAnalysis);
+      console.log(`📊 Confidence for ${symbol}: ${confidence.score}% (${confidence.tier})`);
       
       return {
         ...fullAnalysis,
@@ -868,6 +955,7 @@ class RealTimeSignalGenerator extends EventEmitter {
 
     } catch (err) {
       logger.error(`Analysis failed for ${symbol}:`, err.message);
+      console.error(`❌ Analysis failed for ${symbol}:`, err.message);
       return null;
     }
   }
@@ -931,12 +1019,20 @@ class RealTimeSignalGenerator extends EventEmitter {
   }
 
   async generateSignal(symbol, force = false) {
+    console.log(`🎯 Generating signal for ${symbol} (force=${force})...`);
     const analysis = await this.analyzeSymbol(symbol);
     
-    if (!analysis) return null;
-    if (!force && !analysis.confidence.passed) return null;
+    if (!analysis) {
+      console.log(`❌ No analysis available for ${symbol}`);
+      return null;
+    }
+    if (!force && !analysis.confidence.passed) {
+      console.log(`❌ Confidence too low for ${symbol}: ${analysis.confidence.score}%`);
+      return null;
+    }
 
     // Build complete signal
+    console.log(`🏗️ Building signal for ${symbol}...`);
     const signal = this.buildSignal(analysis);
     
     // Log and emit
@@ -949,6 +1045,8 @@ class RealTimeSignalGenerator extends EventEmitter {
 
     this.emit('signal', signal);
     this.activeSignals.set(signal.id, signal);
+    
+    console.log(`✅ Signal generated: ${signal.id} for ${symbol}`);
 
     return signal;
   }
@@ -1049,17 +1147,22 @@ class RealTimeSignalGenerator extends EventEmitter {
   }
 
   async startContinuousScanning() {
-    if (this.isScanning) return;
+    if (this.isScanning) {
+      console.log('⚠️ Scanning already active');
+      return;
+    }
     this.isScanning = true;
-
-    logger.info('Starting real-time market scanning...');
+    console.log('🚀 Starting continuous market scanning...');
 
     const scanLoop = async () => {
       while (this.isScanning) {
         try {
+          console.log('🔄 New scan cycle started...');
           // Get top volume pairs
           const symbols = await this.marketData.getTopVolumeSymbols(15);
+          console.log(`📊 Scanning ${symbols.length} symbols...`);
           
+          let signalsFound = 0;
           for (const symbol of symbols) {
             // Skip if already have active signal for this symbol
             const hasActive = Array.from(this.activeSignals.values())
@@ -1069,17 +1172,23 @@ class RealTimeSignalGenerator extends EventEmitter {
               const signal = await this.generateSignal(symbol);
               if (signal) {
                 logger.info(`🎯 Signal generated: ${symbol} ${signal.direction} @ ${signal.confidence.score}%`);
+                console.log(`🎯 SIGNAL: ${symbol} ${signal.direction} @ ${signal.confidence.score}% confidence`);
+                signalsFound++;
                 // Wait between signals to respect rate limits
                 await new Promise(r => setTimeout(r, 2000));
               }
+            } else {
+              console.log(`⏭️ Skipping ${symbol} - active signal exists`);
             }
           }
           
+          console.log(`✅ Scan cycle complete. Signals found: ${signalsFound}`);
           // Wait before next scan cycle
           await new Promise(r => setTimeout(r, 10000));
           
         } catch (err) {
           logger.error('Scan loop error:', err.message);
+          console.error('❌ Scan loop error:', err.message);
           await new Promise(r => setTimeout(r, 30000));
         }
       }
@@ -1089,422 +1198,34 @@ class RealTimeSignalGenerator extends EventEmitter {
   }
 
   stopScanning() {
+    console.log('⏹️ Stopping market scanning...');
     this.isScanning = false;
   }
 
   async monitorSignal(signalId) {
     const signal = this.activeSignals.get(signalId);
-    if (!signal) return;
+    if (!signal) {
+      console.log(`⚠️ Cannot monitor unknown signal: ${signalId}`);
+      return;
+    }
+    
+    console.log(`👁️  Starting monitor for signal ${signalId} (${signal.symbol})`);
 
     const checkInterval = setInterval(async () => {
       try {
         const currentPrice = await this.marketData.getCurrentPrice(signal.symbol);
+        console.log(`💰 Monitor check ${signal.symbol}: $${currentPrice} (SL: $${signal.stopLoss}, TP: $${signal.takeProfit})`);
         
         // Check stop loss
         if (signal.direction === 'LONG' && currentPrice <= signal.stopLoss) {
+          console.log(`🛑 STOP LOSS hit for ${signal.symbol} @ $${currentPrice}`);
           this.emit('signal_closed', { signal, result: 'stop_loss', price: currentPrice });
           clearInterval(checkInterval);
           this.activeSignals.delete(signalId);
         }
         // Check take profit
         else if (signal.direction === 'LONG' && currentPrice >= signal.takeProfit) {
+          console.log(`🎯 TAKE PROFIT hit for ${signal.symbol} @ $${currentPrice}`);
           this.emit('signal_closed', { signal, result: 'take_profit', price: currentPrice });
           clearInterval(checkInterval);
-          this.activeSignals.delete(signalId);
-        }
-        // Short variants
-        else if (signal.direction === 'SHORT' && currentPrice >= signal.stopLoss) {
-          this.emit('signal_closed', { signal, result: 'stop_loss', price: currentPrice });
-          clearInterval(checkInterval);
-          this.activeSignals.delete(signalId);
-        }
-        else if (signal.direction === 'SHORT' && currentPrice <= signal.takeProfit) {
-          this.emit('signal_closed', { signal, result: 'take_profit', price: currentPrice });
-          clearInterval(checkInterval);
-          this.activeSignals.delete(signalId);
-        }
-        
-      } catch (err) {
-        logger.error(`Monitor error for ${signal.symbol}:`, err.message);
-      }
-    }, 5000);
-
-    // Auto-expire after 4 hours
-    setTimeout(() => {
-      clearInterval(checkInterval);
-      this.activeSignals.delete(signalId);
-    }, 4 * 3600000);
-  }
-}
-
-// ==========================================
-// TELEGRAM BOT INTERFACE
-// ==========================================
-
-class SignalAlphaTelegramBot {
-  constructor() {
-    this.bot = new Telegraf(CONFIG.BOT_TOKEN);
-    this.marketData = new MarketDataEngine();
-    this.ta = new InstitutionalTA();
-    this.confidence = new ConfidenceEngine();
-    this.strategy = new StrategyDetector();
-    this.generator = new RealTimeSignalGenerator(this.marketData, this.ta, this.confidence, this.strategy);
-    this.tradeLogger = new TradeLogger();
-    
-    this.userSettings = new Map();
-    this.setupBot();
-  }
-
-  setupBot() {
-    // Middleware
-    this.bot.use(async (ctx, next) => {
-      ctx.isAdmin = CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
-      await next();
-    });
-
-    // Commands
-    this.setupCommands();
-    
-    // Actions
-    this.setupActions();
-    
-    // Signal listener
-    this.generator.on('signal', (signal) => this.broadcastSignal(signal));
-    this.generator.on('signal_closed', (data) => this.handleSignalClose(data));
-  }
-
-  setupCommands() {
-    this.bot.command('start', async (ctx) => {
-      const welcome = [
-        '🎯 *SignalAlpha - Institutional Grade Signals*',
-        '',
-        'Real-time analysis for the $10 → $100 challenge.',
-        '',
-        '*Features:*',
-        '• Multi-timeframe trend analysis',
-        '• Dynamic confidence scoring (70-100%)',
-        '• Live market data from BingX',
-        '• Auto position sizing & risk management',
-        '',
-        '📊 Use /dashboard to view progress',
-        '🎯 Use /signal to get latest setup',
-        '',
-        `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``
-      ].join('\n');
-
-      await ctx.reply(welcome, {
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
-          [Markup.button.callback('📈 Live Scan', 'LIVE_SCAN'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-        ])
-      });
-    });
-
-    this.bot.command('dashboard', async (ctx) => {
-      await this.sendDashboard(ctx);
-    });
-
-    this.bot.command('signal', async (ctx) => {
-      await ctx.reply('🔍 Scanning for A+ setups...', { parse_mode: 'Markdown' });
-      
-      const symbols = await this.marketData.getTopVolumeSymbols(5);
-      let found = false;
-      
-      for (const symbol of symbols) {
-        const signal = await this.generator.generateSignal(symbol);
-        if (signal) {
-          await this.sendSignal(ctx.chat.id, signal);
-          found = true;
-          break;
-        }
-      }
-      
-      if (!found) {
-        await ctx.reply('❌ No A+ setups found. Markets are consolidating. Patience pays.', 
-          Markup.inlineKeyboard([
-            [Markup.button.callback('🔔 Enable Auto-Alerts', 'ENABLE_ALERTS')],
-            [Markup.button.callback('📊 View Dashboard', 'DASHBOARD')]
-          ])
-        );
-      }
-    });
-
-    this.bot.command('scan', async (ctx) => {
-      if (!ctx.isAdmin) return ctx.reply('⛔ Admin only');
-      
-      await ctx.reply('🔍 Force scanning all markets...');
-      await this.generator.startContinuousScanning();
-      await ctx.reply('✅ Live scanning activated. Signals will appear automatically.');
-    });
-
-    this.bot.command('stop', async (ctx) => {
-      if (!ctx.isAdmin) return ctx.reply('⛔ Admin only');
-      this.generator.stopScanning();
-      await ctx.reply('⏹️ Scanning stopped.');
-    });
-
-    this.bot.command('stats', async (ctx) => {
-      const recent = await this.tradeLogger.getRecentTrades(24);
-      const signals = recent.filter(r => r.type === 'SIGNAL_GENERATED');
-      
-      await ctx.reply([
-        '📊 *24H Statistics*',
-        '',
-        `Signals Generated: ${signals.length}`,
-        `Active Scans: ${this.generator.isScanning ? '✅ ON' : '❌ OFF'}`,
-        `Markets Tracked: ${this.marketData.perpetualMarkets?.length || 0}`,
-        '',
-        `Challenge Day: ${CONFIG.CHALLENGE.DAYS}`,
-        `Current Capital: $${CONFIG.CHALLENGE.CURRENT_CAPITAL}`,
-        `Target: $${CONFIG.CHALLENGE.TARGET}`
-      ].join('\n'), { parse_mode: 'Markdown' });
-    });
-  }
-
-  setupActions() {
-    this.bot.action('DASHBOARD', async (ctx) => {
-      await ctx.answerCbQuery();
-      await this.sendDashboard(ctx);
-    });
-
-    
-    this.bot.action('GET_SIGNAL', async (ctx) => {
-      await ctx.answerCbQuery('Analyzing...');
-      await ctx.reply('🔍 Scanning top volume pairs for A+ setups...');
-      
-      const symbols = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'DOGE/USDT:USDT'];
-      
-      for (const symbol of symbols) {
-        const signal = await this.generator.generateSignal(symbol);
-        if (signal) {
-          await this.sendSignal(ctx.chat.id, signal);
-          return;
-        }
-        await new Promise(r => setTimeout(r, 1000));
-      }
-      
-      await ctx.reply('❌ No high-confidence setups found. Check back in 15 minutes.');
-    });
-
-    this.bot.action('LIVE_SCAN', async (ctx) => {
-      await ctx.answerCbQuery();
-      if (!ctx.isAdmin) {
-        return ctx.reply('⛔ Auto-scanning is admin-controlled. Use /signal for manual scan.');
-      }
-      await this.generator.startContinuousScanning();
-      await ctx.reply('🔥 Live scanning activated! A+ signals will appear automatically.');
-    });
-
-    this.bot.action('SETTINGS', async (ctx) => {
-      await ctx.answerCbQuery();
-      await ctx.reply('⚙️ *Settings*', {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('Min Confidence: 70%', 'SET_CONF_70')],
-          [Markup.button.callback('Min Confidence: 80%', 'SET_CONF_80')],
-          [Markup.button.callback('Min Confidence: 85%', 'SET_CONF_85')],
-          [Markup.button.callback('🔙 Back', 'MAIN_MENU')]
-        ])
-      });
-    });
-
-    this.bot.action(/SET_CONF_(\d+)/, async (ctx) => {
-      const conf = ctx.match[1];
-      this.userSettings.set(ctx.from.id, { minConfidence: parseInt(conf) });
-      await ctx.answerCbQuery(`Min confidence set to ${conf}%`);
-      await ctx.reply(`✅ Minimum confidence threshold: ${conf}%`);
-    });
-
-    this.bot.action('MAIN_MENU', async (ctx) => {
-      await ctx.answerCbQuery();
-      await ctx.reply('🏠 *Main Menu*', {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
-          [Markup.button.callback('📈 Live Scan', 'LIVE_SCAN'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-        ])
-      });
-    });
-  }
-
-  async sendDashboard(ctx) {
-    const progressBar = (pct) => '█'.repeat(Math.round(pct / 10)) + '░'.repeat(10 - Math.round(pct / 10));
-    const current = CONFIG.CHALLENGE.CURRENT_CAPITAL;
-    const progress = ((current - CONFIG.CHALLENGE.START_CAPITAL) / 
-                     (CONFIG.CHALLENGE.TARGET - CONFIG.CHALLENGE.START_CAPITAL) * 100);
-
-    const text = [
-      '🎯 *SIGNALALPHA DASHBOARD*',
-      '',
-      `💰 Capital: $${current.toFixed(2)} / $${CONFIG.CHALLENGE.TARGET}`,
-      `📈 Progress: ${Math.max(0, progress).toFixed(1)}% ${progressBar(progress)}`,
-      `📅 Challenge: Day 1/${CONFIG.CHALLENGE.DAYS}`,
-      '',
-      '*System Status:*',
-      `🔍 Live Scan: ${this.generator.isScanning ? '🟢 ACTIVE' : '⚪ IDLE'}`,
-      `📊 Markets: ${this.marketData.perpetualMarkets?.length || 0} tracked`,
-      `🎯 Signals Today: 0/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`,
-      '',
-      '*Risk Limits:*',
-      `Daily Loss: ${CONFIG.RISK.DAILY_LOSS_LIMIT_PCT}% ($${(CONFIG.CHALLENGE.START_CAPITAL * CONFIG.RISK.DAILY_LOSS_LIMIT_PCT / 100).toFixed(2)})`,
-      `Consecutive Losses: 0/${CONFIG.RISK.MAX_CONSECUTIVE_LOSSES}`,
-      '',
-      `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK})`
-    ].join('\n');
-
-    const buttons = ctx.isAdmin ? [
-      [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('🔥 Start Live Scan', 'LIVE_SCAN')],
-      [Markup.button.callback('⏹️ Stop Scan', 'STOP_SCAN'), Markup.button.callback('📊 Stats', 'STATS')],
-      [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-    ] : [
-      [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('📊 Stats', 'STATS')],
-      [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-    ];
-
-    await ctx.reply(text, {
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true,
-      ...Markup.inlineKeyboard(buttons)
-    });
-  }
-
-  async sendSignal(chatId, signal) {
-    const text = [
-      '╔══════════════════════════════════════════════════════════════╗',
-      '║           🎯 SIGNALALPHA CRYPTO SIGNAL                       ║',
-      '║              [$10 → $100 Challenge]                          ║',
-      '╚══════════════════════════════════════════════════════════════╝',
-      '',
-      '📊 *MARKET SNAPSHOT*',
-      `Asset: ${signal.symbol}`,
-      `Timeframe: 15M / 1H / 4H`,
-      `Generated: ${new Date(signal.timestamp).toISOString().replace('T', ' ').substr(0, 16)} UTC`,
-      `Valid Until: ${new Date(signal.validUntil).toISOString().replace('T', ' ').substr(0, 16)} UTC`,
-      '',
-      '🎯 *TRADE DIRECTIVE*',
-      `Direction: ${signal.direction === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}`,
-      `Confidence: ${signal.confidence.score}% (TIER: ${signal.confidence.tier})`,
-      `Strategy: ${signal.strategy} [${signal.quality}]`,
-      '',
-      '💰 *ENTRY PARAMETERS*',
-      `Entry Zone: $${signal.entry.zone.min.toFixed(4)} - $${signal.entry.zone.max.toFixed(4)}`,
-      `Stop Loss: $${signal.stopLoss.toFixed(4)}`,
-      `Take Profit: $${signal.takeProfit.toFixed(4)}`,
-      `Risk/Reward: 1:${signal.riskReward}`,
-      '',
-      '⚙️ *POSITION DETAILS*',
-      `Risk: ${signal.position.riskPct}% ($${signal.position.riskAmount})`,
-      `Leverage: ${signal.position.leverage}x`,
-      `Position Size: $${signal.position.positionSize}`,
-      `Margin Required: $${signal.position.margin}`,
-      `Est. Profit: $${signal.position.estProfit} | Est. Loss: $${signal.position.estLoss}`,
-      '',
-      '📈 *TECHNICAL RATIONALE*',
-      `• Trend: ${signal.analysis.trend} (Aligned: ${signal.analysis.trendAlignment ? 'Yes' : 'No'})`,
-      `• Momentum: RSI ${signal.analysis.rsi}, MACD ${signal.analysis.macdDirection}`,
-      `• Volume: ${signal.analysis.volumeRatio}x average (${signal.analysis.volumeTrend})`,
-      `• Support: $${signal.analysis.support} (${signal.analysis.supportTouches} touches)`,
-      `• Resistance: $${signal.analysis.resistance} (${signal.analysis.resistanceTouches} touches)`,
-      '',
-      '🎯 *EXECUTION PLAN*',
-      `1. ${signal.execution.step1}`,
-      `2. ${signal.execution.step2}`,
-      `3. ${signal.execution.step3}`,
-      '',
-      '📊 *CHALLENGE TRACKER*',
-      `Start: $${signal.challenge.startCapital}`,
-      `Current: $${signal.challenge.currentCapital} (${((current - 10) / 10 * 100).toFixed(1)}%)`,
-      `Target: $${signal.challenge.target}`,
-      `Progress: ${signal.challenge.progress}% ${'█'.repeat(Math.round(signal.challenge.progress / 10))}${'░'.repeat(10 - Math.round(signal.challenge.progress / 10))}`,
-      `Days Left: ${signal.challenge.daysLeft}`,
-      '',
-      '═══════════════════════════════════════════════════════════════',
-      `🔗 EXECUTE ON BINGX: ${CONFIG.REFERRAL.LINK}`,
-      `🎁 REFERRAL CODE: ${CONFIG.REFERRAL.CODE}`,
-      '═══════════════════════════════════════════════════════════════',
-      '',
-      '⚡ *Disclaimer:* Educational analysis only. Crypto trading carries substantial risk.'
-    ].join('\n');
-
-    await this.bot.telegram.sendMessage(chatId, text, {
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true,
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Signal Taken', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skipped', `SKIPPED_${signal.id}`)],
-        [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
-      ])
-    });
-
-    // Start monitoring this signal
-    this.generator.monitorSignal(signal.id);
-  }
-
-  async broadcastSignal(signal) {
-    // Send to all admin users
-    for (const adminId of CONFIG.ADMIN_IDS) {
-      try {
-        await this.sendSignal(adminId, signal);
-      } catch (err) {
-        logger.error(`Failed to send to admin ${adminId}:`, err.message);
-      }
-    }
-  }
-
-  async handleSignalClose(data) {
-    const { signal, result, price } = data;
-    logger.info(`Signal closed: ${signal.symbol} ${result} @ $${price}`);
-    
-    await this.tradeLogger.log('SIGNAL_CLOSED', {
-      signalId: signal.id,
-      symbol: signal.symbol,
-      result,
-      exitPrice: price,
-      pnl: result === 'take_profit' ? signal.position.estProfit : -signal.position.estLoss,
-    });
-  }
-
-  async start() {
-    // Initialize market data
-    await this.marketData.initialize();
-    
-    // Launch bot
-    await this.bot.launch();
-    logger.info('🚀 SignalAlpha Bot LIVE - Real-time scanning active');
-    
-    // Start continuous scanning if auto-start enabled
-    if (process.env.AUTO_START_SCAN === 'true') {
-      this.generator.startContinuousScanning();
-    }
-    
-    // Graceful shutdown
-    process.once('SIGINT', () => {
-      this.generator.stopScanning();
-      this.bot.stop('SIGINT');
-    });
-    process.once('SIGTERM', () => {
-      this.generator.stopScanning();
-      this.bot.stop('SIGTERM');
-    });
-  }
-}
-
-// ==========================================
-// MAIN ENTRY
-// ==========================================
-
-async function main() {
-  if (!CONFIG.BOT_TOKEN) {
-    console.error('❌ BOT_TOKEN required in .env');
-    process.exit(1);
-  }
-
-  const bot = new SignalAlphaTelegramBot();
-  await bot.start();
-}
-
-main().catch(err => {
-  logger.error('Fatal error:', err);
-  process.exit(1);
-});
+          this.a
