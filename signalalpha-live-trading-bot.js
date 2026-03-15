@@ -154,9 +154,9 @@ class MarketDataEngine extends EventEmitter {
     
     // Initialize CCXT exchange
     try {
-      this.exchange = new ccxt.binance({
+       this.exchange = new ccxt.bybit({
   enableRateLimit: true,
-  options: { defaultType: "future" } // USDT-M futures
+  options: { defaultType: "future" }
 });
       
       if (CONFIG.EXCHANGE.SANDBOX) {
