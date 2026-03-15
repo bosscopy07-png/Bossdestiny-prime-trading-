@@ -138,15 +138,8 @@ class TradeLogger {
 class MarketDataEngine extends EventEmitter {
   constructor() {
     super();
-    this.exchange = new ccxt[CONFIG.EXCHANGE.ID]({
-      apiKey: CONFIG.EXCHANGE.API_KEY,
-      secret: CONFIG.EXCHANGE.API_SECRET,
-      enableRateLimit: true,
-      options: {
-        defaultType: CONFIG.EXCHANGE.DEFAULT_TYPE,
-        adjustForTimeDifference: true,
-      },
-    });
+    
+    
     
     if (CONFIG.EXCHANGE.SANDBOX) {
       this.exchange.setSandboxMode(true);
