@@ -1148,35 +1148,347 @@ class StrategyDetector {
 // ENHANCED REAL-TIME SIGNAL GENERATOR
 // ==========================================
 
-class RealTimeSignalGenerator extends EventEmitter {
-  constructor(marketData, ta, confidence, strategy) {
-    super();
-    this.marketData = marketData;
-    this.ta = ta;
-    this.confidence = confidence;
-    this.strategy = strategy;
-    this.activeSignals = new Map();
-    this.tradeLogger = new TradeLogger();
-    this.isScanning = false;
-    this.scanStats = { scanned: 0, signals: 0, errors: 0 };
-    
-    console.success('RealTimeSignalGenerator initialized');
+class RealTimeSignalGenerator extends EventEmitter { constructor(marketData, ta, confidence, strategy) { super(); this.marketData = marketData; this.ta = ta; this.confidence = confidence; this.strategy = strategy; this.activeSignals = new Map(); this.tradeLogger = new TradeLogger(); this.isScanning = false; this.scanStats = { scanned: 0, signals: 0, errors: 0 };
+console.success('RealTimeSignalGenerator initialized');
+}
+async analyzeSymbol(symbol) { console.info(Analyzing ${symbol}...); try { console.network(Fetching multi-timeframe data for ${symbol}...); const [m5, m15, h1, h4] = await Promise.all([ this.marketData.fetchOHLCV(symbol, ‘5m’, 100), this.marketData.fetchOHLCV(symbol, ‘15m’, 100), this.marketData.fetchOHLCV(symbol, ‘1h’, 100), this.marketData.fetchOHLCV(symbol, ‘4h’, 50), ]);
+  if (!m5 || !m15 || !h1 || !h4) {
+    console.warn(`Insufficient data for ${symbol}`);
+    return null;
   }
 
-  async analyzeSymbol(symbol) {
-    console.info(`Analyzing ${symbol}...`);
+  const currentPrice = await this.marketData.getCurrentPrice(symbol);
+  if (!currentPrice) {
+    console.warn(`Could not get current price for ${symbol}`);
+    return null;
+  }
+  console.success(`Current price for ${symbol}: $${currentPrice.toFixed(4)}`);
+
+  // Volume check
+  const volume24h = await this.marketData.get24hVolume(symbol);
+  if (volume24h < CONFIG.DATA.MIN_VOLUME_USD) {
+    console.warn(`Insufficient volume for ${symbol}: $${volume24h.toLocaleString()}`);
+    return null;
+  }
+
+  // Technical Analysis
+  console.ta(`Running technical analysis on ${symbol}...`);
+  const analysis5m = this.runAnalysis(m5);
+  const analysis15m = this.runAnalysis(m15);
+  const analysis1h = this.runAnalysis(h1);
+  const analysis4h = this.runAnalysis(h4);
+
+  const multiTimeframe = {
+    primary: analysis15m.trend,
+    higherTF: analysis1h.trend,
+    alignment: analysis15m.trend.primary === analysis1h.trend.primary && 
+               analysis1h.trend.primary !== 'neutral',
+  };
+
+  const primary = analysis15m;
+  const higherTF = analysis1h;
+
+  // Detect strategy
+  const setup = this.strategy.detect({
+    ...primary,
+    multiTimeframe,
+    price: currentPrice,
+    ema50: primary.ema50,
+    fibonacci: primary.fibonacci,
+  });
+
+  if (!setup) {
+    console.debug(`No strategy detected for ${symbol}`);
+    return null;
+  }
+  console.signal(`Strategy detected: ${setup.type} ${setup.direction} [${setup.quality}]`);
+
+  // Calculate R:R
+  const risk = Math.abs(setup.entry - setup.stop);
+  const reward = Math.abs(setup.target - setup.entry);
+  const riskReward = reward / risk;
+
+  if (riskReward < CONFIG.RISK.MIN_RR) {
+    console.warn(`R:R too low for ${symbol}: ${riskReward.toFixed(2)} (min: ${CONFIG.RISK.MIN_RR})`);
+    return null;
+  }
+  console.success(`R:R acceptable: ${riskReward.toFixed(2)}`);
+
+  // Full analysis object
+  const fullAnalysis = {
+    symbol,
+    price: currentPrice,
+    multiTimeframe,
+    momentum: primary.momentum,
+    volume: primary.volume,
+    levels: primary.levels,
+    structure: primary.structure,
+    sweep: primary.sweep,
+    setup: { ...setup, riskReward },
+  };
+
+  // Confidence scoring
+  console.info(`Calculating confidence score for ${symbol}...`);
+  const confidence = this.confidence.calculate(fullAnalysis);
+  
+  console.table({
+    Symbol: symbol,
+    Score: confidence.score + '%',
+    Tier: confidence.tier,
+    Passed: confidence.passed ? '✅' : '❌',
+    Recommendation: confidence.recommendation
+  }, 'Confidence Result');
+
+  return {
+    ...fullAnalysis,
+    confidence,
+    timestamp: Date.now(),
+  };
+
+} catch (err) {
+  this.scanStats.errors++;
+  console.error(`Analysis failed for ${symbol}:`, err.message);
+  return null;
+}
+}
+runAnalysis(ohlcv) { const closes = ohlcv.map(c => c[4]); const highs = ohlcv.map(c => c[2]); const lows = ohlcv.map(c => c[3]);
+const ema50 = this.ta.calculateEMA(closes, 50);
+const ema200 = this.ta.calculateEMA(closes, 200);
+
+const trend = {
+  primary: ema50[ema50.length - 1] > ema200[ema200.length - 1] ? 'bullish' :
+           ema50[ema50.length - 1] < ema200[ema200.length - 1] ? 'bearish' : 'neutral',
+  alignment: null,
+};
+
+const rsi = this.ta.calculateRSI(closes);
+const macd = this.ta.calculateMACD(closes);
+const volume = this.ta.analyzeVolume(ohlcv);
+const levels = this.ta.findKeyLevels(ohlcv);
+const structure = this.ta.analyzeStructure(ohlcv);
+const divergence = this.ta.detectDivergence(closes, rsi);
+const sweep = this.ta.detectLiquiditySweep(ohlcv, levels);
+
+const fibRange = {
+  high: Math.max(...highs.slice(-30)),
+  low: Math.min(...lows.slice(-30)),
+};
+const fibonacci = this.ta.calculateFibonacci(fibRange.high, fibRange.low);
+
+return {
+  trend,
+  ema50: ema50[ema50.length - 1],
+  ema200: ema200[ema200.length - 1],
+  momentum: {
+    rsi: rsi[rsi.length - 1],
+    macd,
+    divergence,
+  },
+  volume,
+  levels,
+  structure,
+  sweep,
+  fibonacci,
+};
+}
+async generateSignal(symbol, force = false) { console.info(Generating signal for ${symbol} (force=${force})...); const analysis = await this.analyzeSymbol(symbol);
+if (!analysis) {
+  return null;
+}
+if (!force && !analysis.confidence.passed) {
+  console.warn(`Confidence too low for ${symbol}: ${analysis.confidence.score}%`);
+  return null;
+}
+
+console.success(`Building signal for ${symbol}...`);
+const signal = this.buildSignal(analysis);
+
+await this.tradeLogger.log('SIGNAL_GENERATED', {
+  symbol,
+  direction: signal.direction,
+  confidence: signal.confidence.score,
+  strategy: signal.strategy,
+});
+
+this.emit('signal', signal);
+this.activeSignals.set(signal.id, signal);
+this.scanStats.signals++;
+
+console.signal(`Signal generated: ${signal.id} for ${signal.symbol} ${signal.direction} @ ${signal.confidence.score}%`);
+
+return signal;
+}
+buildSignal(analysis) { const { symbol, price, confidence, setup, multiTimeframe, momentum, volume, levels } = analysis;
+const currentCapital = CONFIG.CHALLENGE.CURRENT_CAPITAL;
+const riskPct = confidence.score >= 90 ? 5 : 
+                confidence.score >= 85 ? 4 : 
+                confidence.score >= 80 ? 3 : 
+                confidence.score >= 70 ? 2.5 : 2;
+
+const riskAmount = currentCapital * (riskPct / 100);
+const riskPrice = Math.abs(setup.entry - setup.stop);
+const positionSize = (riskAmount / riskPrice) * setup.entry;
+
+const leverage = confidence.score >= 90 ? 20 :
+                 confidence.score >= 85 ? 15 :
+                 confidence.score >= 80 ? 10 : 
+                 confidence.score >= 70 ? 7 : 5;
+
+const margin = positionSize / leverage;
+const progress = ((currentCapital - CONFIG.CHALLENGE.START_CAPITAL) / 
+                 (CONFIG.CHALLENGE.TARGET - CONFIG.CHALLENGE.START_CAPITAL) * 100);
+
+return {
+  id: crypto.randomUUID(),
+  timestamp: new Date().toISOString(),
+  validUntil: new Date(Date.now() + 4 * 3600000).toISOString(),
+  
+  symbol,
+  direction: setup.direction === 'bullish' ? 'LONG' : 'SHORT',
+  strategy: setup.type,
+  quality: setup.quality,
+  
+  confidence: {
+    score: confidence.score,
+    tier: confidence.tier,
+    details: confidence.details,
+    bonuses: confidence.bonuses,
+  },
+
+  entry: {
+    price: setup.entry,
+    zone: {
+      min: setup.entry * 0.998,
+      max: setup.entry * 1.002,
+    },
+  },
+  
+  stopLoss: setup.stop,
+  takeProfit: setup.target,
+  
+  riskReward: setup.riskReward.toFixed(2),
+  
+  position: {
+    riskPct,
+    riskAmount: riskAmount.toFixed(2),
+    leverage,
+    positionSize: positionSize.toFixed(2),
+    margin: margin.toFixed(2),
+    estProfit: (positionSize * (Math.abs(setup.target - setup.entry) / setup.entry)).toFixed(2),
+    estLoss: riskAmount.toFixed(2),
+  },
+
+  analysis: {
+    trend: multiTimeframe.primary.primary,
+    trendAlignment: multiTimeframe.alignment,
+    rsi: momentum.rsi.toFixed(1),
+    macdDirection: momentum.macd.trend,
+    macdCrossover: momentum.macd.crossover,
+    volumeRatio: volume.ratio.toFixed(2),
+    volumeTrend: volume.trend,
+    support: levels.support.toFixed(4),
+    resistance: levels.resistance.toFixed(4),
+    supportTouches: levels.supportTouches,
+    resistanceTouches: levels.resistanceTouches,
+  },
+
+  rationale: confidence.details,
+
+  challenge: {
+    startCapital: CONFIG.CHALLENGE.START_CAPITAL,
+    currentCapital: currentCapital.toFixed(2),
+    target: CONFIG.CHALLENGE.TARGET,
+    progress: Math.max(0, Math.min(100, progress)).toFixed(1),
+    daysLeft: CONFIG.CHALLENGE.DAYS,
+  },
+
+  execution: {
+    step1: `Enter on ${setup.timeframe} confirmation with volume`,
+    step2: `Invalidation: Close beyond $${setup.stop.toFixed(4)}`,
+    step3: `Scale 50% at 1:1 R:R, move SL to breakeven`,
+  },
+};
+}
+async startContinuousScanning() { if (this.isScanning) { console.warn(‘Scanning already active’); return; } this.isScanning = true; console.section(‘CONTINUOUS SCANNING’); console.success(‘Starting market scanning…’);
+const scanLoop = async () => {
+  while (this.isScanning) {
     try {
-      console.network(`Fetching multi-timeframe data for ${symbol}...`);
-      const [m5, m15, h1, h4] = await Promise.all([
-        this.marketData.fetchOHLCV(symbol, '5m', 100),
-        this.marketData.fetchOHLCV(symbol, '15m', 100),
-        this.marketData.fetchOHLCV(symbol, '1h', 100),
-        this.marketData.fetchOHLCV(symbol, '4h', 50),
-      ]);
-
-      if (!m5 || !m15 || !h1 || !h4) {
-        console.warn(`Insufficient data for ${symbol}`);
-        return null;
+      this.scanStats.scanned = 0;
+      const symbols = await this.marketData.getTopVolumeSymbols(15);
+      console.info(`New scan cycle: ${symbols.length} symbols`);
+      
+      let cycleSignals = 0;
+      
+      for (let i = 0; i < symbols.length; i++) {
+        const symbol = symbols[i];
+        this.scanStats.scanned++;
+        
+        if (i % 5 === 0) {
+          console.progress(i + 1, symbols.length, 'Scanning');
+        }
+        
+        const hasActive = Array.from(this.activeSignals.values())
+          .some(s => s.symbol === symbol && Date.now() - new Date(s.timestamp).getTime() < 3600000);
+        
+        if (!hasActive) {
+          const signal = await this.generateSignal(symbol);
+          if (signal) {
+            cycleSignals++;
+            console.signal(`Signal #${cycleSignals}: ${symbol} ${signal.direction} @ ${signal.confidence.score}%`);
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        }
       }
+      
+      if (cycleSignals === 0) {
+        console.info('No signals this cycle - markets consolidating');
+      } else {
+        console.success(`Cycle complete: ${cycleSignals} signals generated`);
+      }
+      
+      await new Promise(r => setTimeout(r, 10000));
+      
+    } catch (err) {
+      console.error('Scan loop error:', err.message);
+      await new Promise(r => setTimeout(r, 30000));
+    }
+  }
+};
 
+scanLoop();
+}
+stopScanning() { console.info(‘Stopping market scanning…’); this.isScanning = false; console.table(this.scanStats, ‘Scan Statistics’); }
+async monitorSignal(signalId) { const signal = this.activeSignals.get(signalId); if (!signal) { console.warn(Cannot monitor unknown signal: ${signalId}); return; }
+console.info(`Starting monitor for ${signal.symbol} (SL: $${signal.stopLoss}, TP: $${signal.takeProfit})`);
+
+const checkInterval = setInterval(async () => {
+  try {
+    const currentPrice = await this.marketData.getCurrentPrice(signal.symbol);
     
+    let status = '';
+    if (signal.direction === 'LONG') {
+      if (currentPrice <= signal.stopLoss) status = 'STOP LOSS';
+      else if (currentPrice >= signal.takeProfit) status = 'TAKE PROFIT';
+    } else {
+      if (currentPrice >= signal.stopLoss) status = 'STOP LOSS';
+      else if (currentPrice <= signal.takeProfit) status = 'TAKE PROFIT';
+    }
+
+    if (status) {
+      console.trade(`${status} hit for ${signal.symbol} @ $${currentPrice.toFixed(4)}`);
+      this.emit('signal_closed', { signal, result: status.toLowerCase().replace(' ', '_'), price: currentPrice });
+      clearInterval(checkInterval);
+      this.activeSignals.delete(signalId);
+    }
+    
+  } catch (err) {
+    console.error(`Monitor error for ${signal.symbol}:`, err.message);
+  }
+}, 5000);
+
+setTimeout(() => {
+  console.info(`Signal ${signalId} expired (4h timeout)`);
+  clearInterval(checkInterval);
+  this.activeSignals.delete(signalId);
+}, 4 * 3600000);
+} }
