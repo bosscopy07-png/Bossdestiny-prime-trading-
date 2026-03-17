@@ -102,14 +102,29 @@ const logger = Pino({
 console.log('✅ Logger initialized');
 
 // Improved Trade Logger with rotation and stats
+
 class TradeLogger {
   constructor(filename = 'trades.log') {
     this.filename = filename;
     this.dailyStats = new Map();
-    console.log(`📁 TradeLogger initialized: ${filename}`);
+
+    // Ensure the file exists before logging
+    this.ensureFile()
+      .then(() => console.log(`📁 TradeLogger initialized: ${this.filename}`))
+      .catch(err => console.error(`❌ Failed to initialize TradeLogger file: ${err.message}`));
   }
 
-  async log(type, data) {
+  // Check if the file exists, create if missing
+  async ensureFile() {
+    try {
+      await fs.access(this.filename);
+    } catch {
+      await fs.writeFile(this.filename, '');
+    }
+  }
+
+  // Log any trade or system event
+  async log(type, data = {}) {
     const entry = {
       timestamp: new Date().toISOString(),
       type,
@@ -119,11 +134,23 @@ class TradeLogger {
     try {
       await fs.appendFile(this.filename, JSON.stringify(entry) + '\n');
       console.log(`📝 Logged: ${type} - ${data.symbol || 'system'}`);
+
+      // Update daily stats
+      const dayKey = new Date().toISOString().split('T')[0];
+      if (!this.dailyStats.has(dayKey)) this.dailyStats.set(dayKey, 0);
+      this.dailyStats.set(dayKey, this.dailyStats.get(dayKey) + 1);
+
     } catch (err) {
-      logger.error('Failed to log trade:', err);
-      console.error(`❌ Failed to write to ${this.filename}:`, err.message);
+      console.error(`❌ Failed to write to ${this.filename}: ${err.message}`);
     }
   }
+
+  // Optional: get number of trades/events logged today
+  getDailyCount(date = new Date()) {
+    const dayKey = date.toISOString().split('T')[0];
+    return this.dailyStats.get(dayKey) || 0;
+  }
+}
 
   async getRecentTrades(hours = 24) {
     console.log(`📖 Reading recent trades from last ${hours}h...`);
