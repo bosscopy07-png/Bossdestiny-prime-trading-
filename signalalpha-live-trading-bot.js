@@ -159,105 +159,108 @@ class TradeLogger {
 // ==========================================
 // IMPROVED MARKET DATA ENGINE
 // ==========================================
+ 
 class MarketDataEngine extends EventEmitter {
   constructor() {
     super();
+
     console.log('🏗️ Initializing MarketDataEngine...');
-    
-    // Initialize CCXT exchange with better error handling
+
     try {
       this.exchange = new ccxt[CONFIG.EXCHANGE.ID]({
         enableRateLimit: true,
         options: {
-          defaultType: CONFIG.EXCHANGE.DEFAULT_TYPE,
+          defaultType: CONFIG.EXCHANGE.DEFAULT_TYPE || 'future',
         },
       });
-      
+
       if (CONFIG.EXCHANGE.SANDBOX) {
         this.exchange.setSandboxMode(true);
         console.log('🔒 Sandbox mode enabled');
       }
-      
+
       console.log(`✅ Exchange initialized: ${CONFIG.EXCHANGE.ID}`);
     } catch (err) {
-      console.error('❌ Failed to initialize exchange:', err.message);
-      // Fallback to binance if primary fails
+      console.error('❌ Exchange init failed, fallback to binance');
+
       this.exchange = new ccxt.binance({
         enableRateLimit: true,
         options: { defaultType: 'future' },
       });
-      console.log('⚠️ Fallback to binance exchange');
     }
 
     this.priceCache = new Map();
     this.ohlcvCache = new Map();
     this.wsConnections = new Map();
-    this.isRunning = false;
+
     this.perpetualMarkets = [];
-    this.lastUpdate = Date.now();
-    
-    console.log('✅ MarketDataEngine constructed');
+    this.isRunning = false;
   }
 
+  // =========================
+  // INIT
+  // =========================
   async initialize() {
-    console.log('🚀 Starting MarketDataEngine initialization...');
-    try {
-      console.log('📡 Loading markets from exchange...');
-      await this.exchange.loadMarkets();
-      const marketCount = Object.keys(this.exchange.markets).length;
-      logger.info(`Loaded ${marketCount} markets`);
-      console.log(`✅ Loaded ${marketCount} markets`);
+    console.log('🚀 Initializing MarketDataEngine...');
 
-      // Filter USDT perpetual futures with better criteria
-      console.log('🔍 Filtering perpetual markets...');
-      this.perpetualMarkets = Object.values(this.exchange.markets)
-        .filter(m => {
-          const isSwap = m.type === 'swap' || m.type === 'future';
-          const isUSDT = m.quote === 'USDT' || m.quoteId === 'USDT';
-          return isSwap && isUSDT && m.active && !m.symbol.includes('-');
-        })
-        .map(m => m.symbol)
-        .sort();
-      
-      logger.info(`Found ${this.perpetualMarkets.length} active perpetual markets`);
-      console.log(`✅ Found ${this.perpetualMarkets.length} perpetual markets`);
-      console.log(`📊 Top markets: ${this.perpetualMarkets.slice(0, 5).join(', ')}...`);
+    await this.exchange.loadMarkets();
 
-      // Start WebSocket feeds
-      console.log('🔌 Starting WebSocket feeds...');
-      this.startWebSocketFeeds();
-      
-      // Start polling for OHLCV
-      console.log('📈 Starting OHLCV polling...');
-      this.startOhlcvPolling();
-      
-      this.isRunning = true;
-      console.log('🎯 MarketDataEngine fully initialized and running');
-    } catch (err) {
-      logger.error('Failed to initialize market data:', err);
-      console.error('❌ MarketDataEngine initialization failed:', err.message);
-      throw err;
-    }
+    const markets = Object.values(this.exchange.markets);
+
+    // ✅ STRICT FILTER (NO JUNK)
+    this.perpetualMarkets = markets
+      .filter(m => {
+        const isContract = m.contract === true;
+        const isUSDT = m.quote === 'USDT';
+        const isLinear = m.linear === true;
+
+        const cleanSymbol = m.symbol.replace(':USDT', '');
+        const isClean = /^[A-Z0-9]+\/USDT$/.test(cleanSymbol);
+
+        return isContract && isUSDT && isLinear && m.active && isClean;
+      })
+      .map(m => m.symbol.replace(':USDT', '')) // ✅ normalize
+      .sort();
+
+    console.log(`✅ ${this.perpetualMarkets.length} clean perpetual markets loaded`);
+
+    this.startWebSocketFeeds();
+    this.startOhlcvPolling();
+
+    this.isRunning = true;
   }
 
+  // =========================
+  // NORMALIZE SYMBOL
+  // =========================
+  normalizeSymbol(symbol) {
+    return symbol.replace(':USDT', '');
+  }
+
+  isValidSymbol(symbol) {
+    return this.exchange.markets[symbol] !== undefined;
+  }
+
+  // =========================
+  // WEBSOCKET
+  // =========================
   startWebSocketFeeds() {
-    // Major pairs for real-time price feeds
-    const majorPairs = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt', 'dogeusdt', 'adausdt'];
-    console.log(`🔌 Starting WebSocket connections for ${majorPairs.length} pairs...`);
-    
-    for (const pair of majorPairs) {
+    const pairs = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt'];
+
+    for (const pair of pairs) {
       const wsUrl = `${CONFIG.DATA.BINANCE_FUTURES_WS}/${pair}@kline_1m`;
-      
-      try {
+
+      const connect = () => {
         const ws = new WebSocket(wsUrl);
-        
+
         ws.on('open', () => {
-          console.log(`✅ WebSocket connected: ${pair}`);
+          console.log(`✅ WS connected: ${pair}`);
         });
-        
+
         ws.on('message', (data) => {
           try {
             const msg = JSON.parse(data);
+
             if (msg.k) {
               this.priceCache.set(pair, {
                 price: parseFloat(msg.k.c),
@@ -265,144 +268,146 @@ class MarketDataEngine extends EventEmitter {
                 timestamp: Date.now(),
               });
             }
-          } catch (err) {
-            // Silent parse errors
-          }
+          } catch {}
         });
-        
-        ws.on('error', (err) => {
-          console.error(`❌ WebSocket error for ${pair}:`, err.message);
-        });
-        
+
         ws.on('close', () => {
-          console.warn(`⚠️ WebSocket closed for ${pair}, reconnecting in 10s...`);
-          setTimeout(() => {
-            this.wsConnections.delete(pair);
-            // Reconnect single pair
-            const newWs = new WebSocket(wsUrl);
-            this.wsConnections.set(pair, newWs);
-          }, 10000);
+          console.warn(`⚠️ WS reconnecting: ${pair}`);
+          setTimeout(connect, 5000);
         });
-        
+
+        ws.on('error', () => {});
+
         this.wsConnections.set(pair, ws);
-      } catch (err) {
-        console.error(`❌ Failed to connect WebSocket for ${pair}:`, err.message);
-      }
+      };
+
+      connect();
     }
-    console.log('✅ All WebSocket connections initiated');
   }
 
+  // =========================
+  // OHLCV POLLING
+  // =========================
   startOhlcvPolling() {
-    console.log('⏱️ Starting OHLCV polling (15s interval)...');
-    
     const poll = async () => {
       if (!this.isRunning) return;
-      
+
       try {
-        // Get top 30 by volume for better coverage
-        const symbolsToPoll = this.perpetualMarkets.slice(0, 30);
-        
-        for (const symbol of symbolsToPoll) {
-          for (const timeframe of CONFIG.TA.TIMEFRAMES) {
+        const symbols = this.perpetualMarkets.slice(0, 25);
+
+        for (const symbol of symbols) {
+          const clean = this.normalizeSymbol(symbol);
+
+          if (!this.isValidSymbol(clean)) continue;
+
+          for (const tf of CONFIG.TA.TIMEFRAMES) {
             try {
-              const ohlcv = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, 100);
-              const key = `${symbol}_${timeframe}`;
-              this.ohlcvCache.set(key, {
-                data: ohlcv,
+              const data = await this.exchange.fetchOHLCV(clean, tf, undefined, 100);
+
+              this.ohlcvCache.set(`${clean}_${tf}`, {
+                data,
                 timestamp: Date.now(),
               });
-              // Small delay to respect rate limits
-              await new Promise(r => setTimeout(r, 50));
-            } catch (err) {
-              // Continue on error
-            }
+
+              await this.sleep(80);
+            } catch {}
           }
         }
-        this.lastUpdate = Date.now();
       } catch (err) {
-        console.error('❌ OHLCV polling error:', err.message);
+        console.error('❌ Polling error:', err.message);
       }
-      
-      // Schedule next poll
+
       setTimeout(poll, 15000);
     };
-    
-    // Start first poll
-    setTimeout(poll, 5000);
-    console.log('✅ OHLCV polling active');
+
+    setTimeout(poll, 3000);
   }
 
+  // =========================
+  // FETCH OHLCV
+  // =========================
   async fetchOHLCV(symbol, timeframe, limit = 100) {
-    const key = `${symbol}_${timeframe}`;
+    const clean = this.normalizeSymbol(symbol);
+
+    if (!this.isValidSymbol(clean)) {
+      console.log(`⛔ Invalid symbol: ${clean}`);
+      return null;
+    }
+
+    const key = `${clean}_${timeframe}`;
     const cached = this.ohlcvCache.get(key);
-    
-    // Use cache if less than 45 seconds old
+
     if (cached && Date.now() - cached.timestamp < 45000) {
       return cached.data;
     }
 
     try {
-      console.log(`📊 Fetching OHLCV: ${symbol} ${timeframe}`);
-      const data = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
-      this.ohlcvCache.set(key, { data, timestamp: Date.now() });
+      console.log(`📊 Fetching OHLCV: ${clean} ${timeframe}`);
+
+      const data = await this.exchange.fetchOHLCV(clean, timeframe, undefined, limit);
+
+      this.ohlcvCache.set(key, {
+        data,
+        timestamp: Date.now(),
+      });
+
       return data;
     } catch (err) {
-      logger.error(`Failed to fetch OHLCV for ${symbol}:`, err.message);
-      return cached?.data || null; // Return stale cache if available
+      console.error(`❌ OHLCV FAIL: ${clean}`, err.message);
+      return cached?.data || null;
     }
   }
 
+  // =========================
+  // PRICE
+  // =========================
   async getCurrentPrice(symbol) {
-    // Try WebSocket first
-    const wsKey = symbol.toLowerCase().replace('/', '').replace(':', '');
-    const wsData = this.priceCache.get(wsKey);
-    if (wsData && Date.now() - wsData.timestamp < 10000) {
-      return wsData.price;
+    const clean = this.normalizeSymbol(symbol);
+
+    const wsKey = clean.toLowerCase().replace('/', '');
+    const ws = this.priceCache.get(wsKey);
+
+    if (ws && Date.now() - ws.timestamp < 10000) {
+      return ws.price;
     }
-    
-    // Fallback to REST
+
     try {
-      const ticker = await this.exchange.fetchTicker(symbol);
+      const ticker = await this.exchange.fetchTicker(clean);
       return ticker.last;
-    } catch (err) {
-      logger.error(`Failed to get price for ${symbol}:`, err.message);
+    } catch {
       return null;
     }
   }
 
-  async get24hVolume(symbol) {
-    try {
-      const ticker = await this.exchange.fetchTicker(symbol);
-      return ticker.quoteVolume || 0;
-    } catch (err) {
-      return 0;
-    }
-  }
-
+  // =========================
+  // TOP VOLUME
+  // =========================
   async getTopVolumeSymbols(count = 20) {
-    console.log(`🏆 Fetching top ${count} volume symbols...`);
     try {
       const tickers = await this.exchange.fetchTickers();
-      const sorted = Object.values(tickers)
+
+      return Object.values(tickers)
         .filter(t => {
-          const isPerp = t.symbol && (t.symbol.includes(':USDT') || t.symbol.includes('/USDT'));
-          const hasVolume = t.quoteVolume > CONFIG.TA.MIN_VOLUME_USD;
-          return isPerp && hasVolume;
+          const symbol = t.symbol?.replace(':USDT', '');
+          return (
+            symbol &&
+            /^[A-Z0-9]+\/USDT$/.test(symbol) &&
+            t.quoteVolume > CONFIG.TA.MIN_VOLUME_USD
+          );
         })
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
         .slice(0, count)
-        .map(t => t.symbol);
-      
-      console.log(`✅ Top volumes: ${sorted.slice(0, 5).join(', ')}...`);
-      return sorted;
-    } catch (err) {
-      console.error('❌ Failed to fetch top volumes:', err.message);
-      // Return default majors
-      return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT'];
+        .map(t => t.symbol.replace(':USDT', ''));
+    } catch {
+      return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
     }
   }
-}
 
+  sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+}
+    
 // ==========================================
 // END OF PART 1
 // 
