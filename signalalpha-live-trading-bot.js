@@ -247,34 +247,81 @@ try {
   // =========================
   // NORMALIZE SYMBOL
   // =========================
-  // ==========================================
-// ADD TO PART 1 - After MarketDataEngine constructor
+// ==========================================
+// ADD THESE METHODS TO MarketDataEngine CLASS (Part 1)
+// Insert after: console.log('✅ MarketDataEngine constructed');
 // ==========================================
 
-// Add this method to MarketDataEngine class
-normalizeSymbol(symbol) {
-  // Handle various input formats and convert to exchange-specific format
-  if (!symbol) return null;
+// Validate if symbol exists in loaded markets
+isValidSymbol(symbol) {
+  if (!symbol) return false;
+  if (!this.exchange.markets) return false;
   
-  // If already in CCXT perpetual format (e.g., BTC/USDT:USDT)
-  if (symbol.includes(':USDT')) return symbol;
+  // Check exact match
+  if (this.exchange.markets[symbol]) return true;
   
-  // If in simple format (e.g., BTC/USDT or BTCUSDT)
-  let base = symbol.replace('/USDT', '').replace('USDT', '').toUpperCase();
+  // Check alternative formats
+  const normalized = symbol.replace(':USDT', '/USDT');
+  if (this.exchange.markets[normalized]) return true;
   
-  // Return CCXT perpetual format
-  return `${base}/USDT:USDT`;
+  // Check if any market contains this base
+  const base = symbol.split('/')[0];
+  const found = Object.keys(this.exchange.markets).some(m => 
+    m.startsWith(base + '/') && m.includes('USDT')
+  );
+  
+  return found;
 }
 
-// ==========================================
-// REPLACE getTopVolumeSymbols in Part 1
-// ==========================================
+// Normalize any symbol format to exchange-specific format
+normalizeSymbol(symbol) {
+  if (!symbol) return null;
+  
+  // Already in correct format
+  if (symbol.includes(':USDT') && this.exchange.markets[symbol]) {
+    return symbol;
+  }
+  
+  // Convert BTC/USDT to BTC/USDT:USDT
+  if (symbol.includes('/USDT') && !symbol.includes(':')) {
+    const perpetual = symbol.replace('/USDT', '/USDT:USDT');
+    if (this.exchange.markets[perpetual]) return perpetual;
+  }
+  
+  // Convert BTCUSDT to BTC/USDT:USDT
+  if (!symbol.includes('/')) {
+    const base = symbol.replace('USDT', '');
+    const perpetual = `${base}/USDT:USDT`;
+    if (this.exchange.markets[perpetual]) return perpetual;
+    
+    // Try with dash (e.g., HYPE-USDT)
+    const dashed = `${base}/USDT:USDT`;
+    if (this.exchange.markets[dashed]) return dashed;
+  }
+  
+  // Return original if we can't normalize
+  return symbol;
+}
 
+// Safe OHLCV fetch with validation
+async safeFetchOHLCV(symbol, timeframe, limit = 100) {
+  if (!this.isValidSymbol(symbol)) {
+    console.log(`⛔ Invalid symbol: ${symbol}`);
+    return null;
+  }
+  
+  try {
+    return await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
+  } catch (err) {
+    if (err.message.includes('Invalid symbol')) {
+      console.log(`⛔ Invalid symbol (exchange): ${symbol}`);
+      return null;
+    }
+    throw err;
+  }
+  }
+    
 
-
-  // =========================
-  // WEBSOCKET
-  // =========================
   // ==========================================
 // REPLACE startWebSocketFeeds in Part 1
 // ==========================================
@@ -331,100 +378,134 @@ startWebSocketFeeds() {
 }
   
 
-  // =========================
-  // OHLCV POLLING
-  // =========================
-  startOhlcvPolling() {
-    const poll = async () => {
-      if (!this.isRunning) return;
+  // ==========================================
+// REPLACE startOhlcvPolling in Part 1
+// ==========================================
 
-      try {
-        const symbols = this.perpetualMarkets.slice(0, 25);
-
-        for (const symbol of symbols) {
-          const clean = this.normalizeSymbol(symbol);
-
-          if (!this.isValidSymbol(clean)) continue;
-
-          for (const tf of CONFIG.TA.TIMEFRAMES) {
-            try {
-              const data = await this.exchange.fetchOHLCV(clean, tf, undefined, 100);
-
-              this.ohlcvCache.set(`${clean}_${tf}`, {
-                data,
+startOhlcvPolling() {
+  console.log('⏱️ Starting OHLCV polling (15s interval)...');
+  
+  const poll = async () => {
+    if (!this.isRunning) return;
+    
+    try {
+      // Get top symbols and validate them
+      const rawSymbols = this.perpetualMarkets.slice(0, 30);
+      const validSymbols = rawSymbols.filter(s => this.isValidSymbol(s));
+      
+      if (validSymbols.length === 0) {
+        console.log('⚠️ No valid symbols to poll');
+        await new Promise(r => setTimeout(r, 30000));
+        if (this.isRunning) setTimeout(poll, 15000);
+        return;
+      }
+      
+      console.log(`🔄 Polling ${validSymbols.length} valid symbols...`);
+      
+      for (const symbol of validSymbols) {
+        if (!this.isRunning) break;
+        
+        for (const timeframe of CONFIG.TA.TIMEFRAMES) {
+          try {
+            const ohlcv = await this.safeFetchOHLCV(symbol, timeframe, 100);
+            if (ohlcv && ohlcv.length > 0) {
+              const key = `${symbol}_${timeframe}`;
+              this.ohlcvCache.set(key, {
+                data: ohlcv,
                 timestamp: Date.now(),
               });
-
-              await this.sleep(80);
-            } catch {}
+            }
+            await new Promise(r => setTimeout(r, 100)); // Rate limit protection
+          } catch (err) {
+            // Silent continue on individual fetch error
           }
         }
-      } catch (err) {
-        console.error('❌ Polling error:', err.message);
       }
-
+      
+      this.lastUpdate = Date.now();
+      console.log(`✅ Poll cycle complete, cache size: ${this.ohlcvCache.size}`);
+      
+    } catch (err) {
+      console.error('❌ Polling error:', err.message);
+    }
+    
+    // Schedule next poll
+    if (this.isRunning) {
       setTimeout(poll, 15000);
-    };
-
-    setTimeout(poll, 3000);
-  }
-
+    }
+  };
+  
+  // Start first poll after delay
+  setTimeout(poll, 5000);
+  console.log('✅ OHLCV polling active');
+        }
+    
   // =========================
   // FETCH OHLCV
   // =========================
-  async fetchOHLCV(symbol, timeframe, limit = 100) {
-    const clean = this.normalizeSymbol(symbol);
 
-    if (!this.isValidSymbol(clean)) {
-      console.log(`⛔ Invalid symbol: ${clean}`);
-      return null;
-    }
+async fetchOHLCV(symbol, timeframe, limit = 100) {
+  // Normalize symbol first
+  const normalizedSymbol = this.normalizeSymbol(symbol) || symbol;
+  
+  const key = `${normalizedSymbol}_${timeframe}`;
+  const cached = this.ohlcvCache.get(key);
+  
+  // Use cache if less than 45 seconds old
+  if (cached && Date.now() - cached.timestamp < 45000) {
+    return cached.data;
+  }
 
-    const key = `${clean}_${timeframe}`;
-    const cached = this.ohlcvCache.get(key);
-
-    if (cached && Date.now() - cached.timestamp < 45000) {
-      return cached.data;
-    }
-
-    try {
-      console.log(`📊 Fetching OHLCV: ${clean} ${timeframe}`);
-
-      const data = await this.exchange.fetchOHLCV(clean, timeframe, undefined, limit);
-
-      this.ohlcvCache.set(key, {
-        data,
-        timestamp: Date.now(),
-      });
-
+  try {
+    console.log(`📊 Fetching OHLCV: ${normalizedSymbol} ${timeframe}`);
+    const data = await this.safeFetchOHLCV(normalizedSymbol, timeframe, limit);
+    
+    if (data && data.length > 0) {
+      this.ohlcvCache.set(key, { data, timestamp: Date.now() });
       return data;
-    } catch (err) {
-      console.error(`❌ OHLCV FAIL: ${clean}`, err.message);
-      return cached?.data || null;
     }
+    
+    // Return stale cache if available
+    return cached?.data || null;
+    
+  } catch (err) {
+    logger.error(`Failed to fetch OHLCV for ${normalizedSymbol}:`, err.message);
+    return cached?.data || null;
   }
+}
+  
+  // ==========================================
+// REPLACE getCurrentPrice in Part 1
+// ==========================================
 
-  // =========================
-  // PRICE
-  // =========================
-  async getCurrentPrice(symbol) {
-    const clean = this.normalizeSymbol(symbol);
-
-    const wsKey = clean.toLowerCase().replace('/', '');
-    const ws = this.priceCache.get(wsKey);
-
-    if (ws && Date.now() - ws.timestamp < 10000) {
-      return ws.price;
-    }
-
-    try {
-      const ticker = await this.exchange.fetchTicker(clean);
-      return ticker.last;
-    } catch {
+async getCurrentPrice(symbol) {
+  if (!symbol) return null;
+  
+  // Normalize symbol
+  const normalized = this.normalizeSymbol(symbol) || symbol;
+  
+  // Try WebSocket first (Binance format: lowercase, no slash)
+  const wsKey = normalized.toLowerCase().replace('/', '').replace(':usdt', 'usdt');
+  const wsData = this.priceCache.get(wsKey);
+  if (wsData && Date.now() - wsData.timestamp < 10000) {
+    return wsData.price;
+  }
+  
+  // Fallback to REST
+  try {
+    if (!this.isValidSymbol(normalized)) {
+      console.log(`⛔ Cannot fetch price - invalid symbol: ${normalized}`);
       return null;
     }
+    
+    const ticker = await this.exchange.fetchTicker(normalized);
+    return ticker?.last || null;
+  } catch (err) {
+    logger.error(`Failed to get price for ${normalized}:`, err.message);
+    return null;
   }
-
+}
+  
   // =========================
   // TOP VOLUME
   // =========================
@@ -1100,50 +1181,7 @@ class InstitutionalTA {
 // ADD TO PART 1 - TradeLogger constructor
 // ==========================================
 
-class TradeLogger {
-  constructor(filename = 'trades.log') {
-    this.filename = filename;
-    this.dailyStats = new Map();
 
-    // Ensure file exists
-    this.ensureFile().then(() => {
-      console.log(`📁 TradeLogger initialized: ${this.filename}`);
-    }).catch(err => {
-      console.error(`❌ Failed to initialize TradeLogger file: ${err.message}`);
-    });
-  }
-
-  async ensureFile() {
-    try {
-      await fs.access(this.filename); // Check if file exists
-    } catch {
-      // File doesn't exist → create empty file
-      await fs.writeFile(this.filename, '');
-    }
-  }
-
-  async logTrade(trade) {
-    try {
-      const line = JSON.stringify(trade) + '\n';
-      await fs.appendFile(this.filename, line);
-    } catch (err) {
-      console.error(`❌ Failed to log trade: ${err.message}`);
-    }
-  }
-}
-
-
-// ==========================================
-// END OF PART 2
-//
-// NEXT: Copy Part 3 below this section
-// Part 3 contains: Confidence Engine & Strategy Detector
-// ==========================================
-// ==========================================
-// PART 3: CONFIDENCE ENGINE & STRATEGY DETECTOR
-// signalalpha-part3.js
-// Continue from Part 2
-// ==========================================
 
 // ==========================================
 // BALANCED CONFIDENCE SCORING ENGINE
@@ -1790,17 +1828,6 @@ class StrategyDetector {
   }
 }
 
-// ==========================================
-// END OF PART 3
-//
-// NEXT: Copy Part 4 below this section
-// Part 4 contains: Signal Generator & Telegram Bot
-// ==========================================
-// ==========================================
-// PART 4: SIGNAL GENERATOR & TELEGRAM BOT
-// signalalpha-part4.js
-// Continue from Part 3
-// ==========================================
 
 // ==========================================
 // REAL-TIME SIGNAL GENERATOR
@@ -1829,10 +1856,6 @@ class RealTimeSignalGenerator extends EventEmitter {
   // MULTI-TIMEFRAME ANALYSIS
   // ==========================================
   
-  // ==========================================
-// ADD TO PART 4 - Beginning of analyzeSymbol method
-// ==========================================
-
 async analyzeSymbol(symbol) {
   // Validate and normalize symbol
   if (!symbol) {
@@ -1840,48 +1863,51 @@ async analyzeSymbol(symbol) {
     return null;
   }
 
-  // Ensure proper CCXT perpetual format
-  let normalizedSymbol = symbol;
-  if (!symbol.includes(':USDT')) {
-    // Convert BTC/USDT or BTCUSDT to BTC/USDT:USDT
-    const base = symbol.replace('/USDT', '').replace('USDT', '').toUpperCase();
-    normalizedSymbol = `${base}/USDT:USDT`;
-    console.log(`🔄 Normalized ${symbol} → ${normalizedSymbol}`);
+  // Normalize to exchange format
+  const normalizedSymbol = this.marketData.normalizeSymbol(symbol);
+  
+  if (!normalizedSymbol) {
+    console.log(`⛔ Cannot normalize symbol: ${symbol}`);
+    return null;
+  }
+
+  if (!this.marketData.isValidSymbol(normalizedSymbol)) {
+    console.log(`⛔ Invalid symbol after normalization: ${normalizedSymbol} (original: ${symbol})`);
+    return null;
   }
 
   console.log(`🔍 Analyzing ${normalizedSymbol}...`);
   
   try {
-    // Verify symbol exists in markets
-    if (!this.marketData.perpetualMarkets.includes(normalizedSymbol)) {
-      console.log(`⛔ Symbol not in perpetual markets: ${normalizedSymbol}`);
-      // Try to find close match
-      const match = this.marketData.perpetualMarkets.find(m => 
-        m.includes(normalizedSymbol.split('/')[0])
-      );
-      if (match) {
-        console.log(`🔍 Found alternative: ${match}`);
-        normalizedSymbol = match;
-      } else {
-        return null;
-      }
-    }
-
-    // Fetch multi-timeframe data with error handling
-    let m5, m15, h1, h4;
+    // Fetch multi-timeframe data with individual error handling
+    let m5 = null, m15 = null, h1 = null, h4 = null;
+    
     try {
-      [m5, m15, h1, h4] = await Promise.all([
-        this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100),
-        this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100),
-        this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80),
-        this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50).catch(() => null), // 4H optional
-      ]);
-    } catch (fetchErr) {
-      console.log(`⛔ Fetch error for ${normalizedSymbol}: ${fetchErr.message}`);
-      return null;
+      m5 = await this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100);
+    } catch (e) {
+      console.log(`⚠️ Failed to fetch 5m for ${normalizedSymbol}`);
+    }
+    
+    try {
+      m15 = await this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100);
+    } catch (e) {
+      console.log(`⚠️ Failed to fetch 15m for ${normalizedSymbol}`);
+    }
+    
+    try {
+      h1 = await this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80);
+    } catch (e) {
+      console.log(`⚠️ Failed to fetch 1h for ${normalizedSymbol}`);
+    }
+    
+    try {
+      h4 = await this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50);
+    } catch (e) {
+      // 4H optional
     }
 
-    if (!m15 || m15.length < 50 || !h1 || h1.length < 30) {
+    // Must have at least 15m and 1h
+    if (!m15 || m15.length < 30 || !h1 || h1.length < 20) {
       console.log(`⚠️ Insufficient OHLCV data for ${normalizedSymbol}`);
       return null;
     }
@@ -1899,75 +1925,75 @@ async analyzeSymbol(symbol) {
       return null;
     }
 
-      // Run full analysis on each timeframe
-      const analysis5m = this.ta.runFullAnalysis(m5, '5m');
-      const analysis15m = this.ta.runFullAnalysis(m15, '15m');
-      const analysis1h = this.ta.runFullAnalysis(h1, '1h');
-      const analysis4h = h4 ? this.ta.runFullAnalysis(h4, '4h') : null;
+    // Run full analysis on each timeframe
+    const analysis5m = this.ta.runFullAnalysis(m5, '5m');
+    const analysis15m = this.ta.runFullAnalysis(m15, '15m');
+    const analysis1h = this.ta.runFullAnalysis(h1, '1h');
+    const analysis4h = h4 ? this.ta.runFullAnalysis(h4, '4h') : null;
 
-      // Multi-timeframe confluence
-      const multiTimeframe = {
-        primary: analysis15m.trend,
-        higherTF: analysis1h.trend,
-        alignment: analysis15m.trend.primary === analysis1h.trend.primary && 
-                   analysis15m.trend.primary !== 'neutral' &&
-                   analysis1h.trend.strength > 30,
-        fourHour: analysis4h?.trend || { primary: 'neutral' },
-      };
+    // Multi-timeframe confluence
+    const multiTimeframe = {
+      primary: analysis15m.trend,
+      higherTF: analysis1h.trend,
+      alignment: analysis15m.trend.primary === analysis1h.trend.primary && 
+                 analysis15m.trend.primary !== 'neutral' &&
+                 analysis1h.trend.strength > 30,
+      fourHour: analysis4h?.trend || { primary: 'neutral' },
+    };
 
-      // Use 15m as primary, 1h for confirmation
-      const primary = analysis15m;
-      
-      // Detect strategy
-      const setup = this.strategy.detect({
-        ...primary,
-        multiTimeframe,
-        price: currentPrice,
-      });
+    // Use 15m as primary, 1h for confirmation
+    const primary = analysis15m;
+    
+    // Detect strategy
+    const setup = this.strategy.detect({
+      ...primary,
+      multiTimeframe,
+      price: currentPrice,
+    });
 
-      if (!setup) {
-        console.log(`📊 No strategy match for ${symbol}`);
-        return null;
-      }
-
-      // Validate R:R meets minimum
-      if (setup.rr < CONFIG.RISK.MIN_RR) {
-        console.log(`⚠️ R:R too low for ${symbol}: ${setup.rr.toFixed(2)}:1`);
-        return null;
-      }
-
-      // Full analysis object for confidence scoring
-      const fullAnalysis = {
-        symbol,
-        price: currentPrice,
-        multiTimeframe,
-        momentum: primary.momentum,
-        volume: primary.volume,
-        levels: primary.levels,
-        structure: primary.structure,
-        sweep: primary.sweep,
-        setup,
-        atr: primary.atr,
-      };
-
-      // Calculate confidence
-      const confidence = this.confidence.calculate(fullAnalysis);
-      
-      console.log(`📊 ${symbol}: ${setup.type} ${setup.direction} | Score: ${confidence.score}% (${confidence.tier}) | R:R ${setup.rr.toFixed(2)}:1`);
-
-      return {
-        ...fullAnalysis,
-        confidence,
-        timestamp: Date.now(),
-      };
-
-    } catch (err) {
-      logger.error(`Analysis failed for ${symbol}:`, err.message);
-      console.error(`❌ Analysis error for ${symbol}:`, err.message);
+    if (!setup) {
+      console.log(`📊 No strategy match for ${normalizedSymbol}`);
       return null;
     }
-  }
 
+    // Validate R:R meets minimum
+    if (setup.rr < CONFIG.RISK.MIN_RR) {
+      console.log(`⚠️ R:R too low for ${normalizedSymbol}: ${setup.rr.toFixed(2)}:1`);
+      return null;
+    }
+
+    // Full analysis object for confidence scoring
+    const fullAnalysis = {
+      symbol: normalizedSymbol, // Use normalized symbol
+      price: currentPrice,
+      multiTimeframe,
+      momentum: primary.momentum,
+      volume: primary.volume,
+      levels: primary.levels,
+      structure: primary.structure,
+      sweep: primary.sweep,
+      setup,
+      atr: primary.atr,
+    };
+
+    // Calculate confidence
+    const confidence = this.confidence.calculate(fullAnalysis);
+    
+    console.log(`📊 ${normalizedSymbol}: ${setup.type} ${setup.direction} | Score: ${confidence.score}% (${confidence.tier}) | R:R ${setup.rr.toFixed(2)}:1`);
+
+    return {
+      ...fullAnalysis,
+      confidence,
+      timestamp: Date.now(),
+    };
+
+  } catch (err) {
+    logger.error(`Analysis failed for ${normalizedSymbol}:`, err.message);
+    console.error(`❌ Analysis error for ${normalizedSymbol}:`, err.message);
+    return null;
+  }
+}
+  
   // ==========================================
   // SIGNAL BUILDER (Formats complete signal)
   // ==========================================
