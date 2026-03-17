@@ -1976,74 +1976,86 @@ class RealTimeSignalGenerator extends EventEmitter {
   // ==========================================
   
 async analyzeSymbol(symbol) {
-  // Validate and normalize symbol
+  // Validate input
   if (!symbol) {
     console.log('⛔ No symbol provided');
     return null;
   }
 
-  // Normalize to exchange format
+  console.log(`🔍 Analyzing ${symbol}...`);
+  
+  // Normalize symbol
   const normalizedSymbol = this.marketData.normalizeSymbol(symbol);
   
   if (!normalizedSymbol) {
-    console.log(`⛔ Cannot normalize symbol: ${symbol}`);
+    console.log(`⛔ Cannot normalize: ${symbol}`);
     return null;
   }
 
   if (!this.marketData.isValidSymbol(normalizedSymbol)) {
-    console.log(`⛔ Invalid symbol after normalization: ${normalizedSymbol} (original: ${symbol})`);
+    console.log(`⛔ Invalid symbol: ${normalizedSymbol}`);
     return null;
   }
 
-  console.log(`🔍 Analyzing ${normalizedSymbol}...`);
+  console.log(`📊 Using normalized symbol: ${normalizedSymbol}`);
   
   try {
-    // Fetch multi-timeframe data with individual error handling
-    let m5 = null, m15 = null, h1 = null, h4 = null;
+    // Fetch data with sequential delays to avoid rate limits
+    const m15 = await this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100);
+    await new Promise(r => setTimeout(r, 300)); // Small delay
+    
+    const h1 = await this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80);
+    
+    // 5m and 4h are optional
+    let m5 = null;
+    let h4 = null;
     
     try {
+      await new Promise(r => setTimeout(r, 300));
       m5 = await this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100);
     } catch (e) {
-      console.log(`⚠️ Failed to fetch 5m for ${normalizedSymbol}`);
+      // Optional
     }
     
     try {
-      m15 = await this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100);
-    } catch (e) {
-      console.log(`⚠️ Failed to fetch 15m for ${normalizedSymbol}`);
-    }
-    
-    try {
-      h1 = await this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80);
-    } catch (e) {
-      console.log(`⚠️ Failed to fetch 1h for ${normalizedSymbol}`);
-    }
-    
-    try {
+      await new Promise(r => setTimeout(r, 300));
       h4 = await this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50);
     } catch (e) {
-      // 4H optional
+      // Optional
     }
 
-    // Must have at least 15m and 1h
-    if (!m15 || m15.length < 30 || !h1 || h1.length < 20) {
-      console.log(`⚠️ Insufficient OHLCV data for ${normalizedSymbol}`);
+    // Must have 15m and 1h at minimum
+    if (!m15 || m15.length < 20 || !h1 || h1.length < 10) {
+      console.log(`⚠️ Insufficient data for ${normalizedSymbol}`);
       return null;
     }
 
-    const currentPrice = await this.marketData.getCurrentPrice(normalizedSymbol);
+    // Get price with retry
+    let currentPrice = null;
+    let priceRetries = 3;
+    
+    while (priceRetries > 0 && !currentPrice) {
+      currentPrice = await this.marketData.getCurrentPrice(normalizedSymbol);
+      if (!currentPrice) {
+        priceRetries--;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+    
     if (!currentPrice || currentPrice <= 0) {
-      console.log(`⚠️ Invalid price for ${normalizedSymbol}: ${currentPrice}`);
+      console.log(`⚠️ No price for ${normalizedSymbol}`);
       return null;
     }
 
-    // Volume check (relaxed)
+    // Volume check
     const volume24h = await this.marketData.get24hVolume(normalizedSymbol);
-    if (volume24h < CONFIG.TA.MIN_VOLUME_USD) {
-      console.log(`⚠️ Low volume for ${normalizedSymbol}: $${volume24h?.toLocaleString() || 'N/A'}`);
+    if (!volume24h || volume24h < CONFIG.TA.MIN_VOLUME_USD) {
+      console.log(`⚠️ Low volume for ${normalizedSymbol}: $${volume24h || 0}`);
       return null;
     }
 
+    console.log(`✅ Data ready for ${normalizedSymbol}: Price=$${currentPrice}, Vol=$${volume24h.toLocaleString()}`);
+    
     // Run full analysis on each timeframe
     const analysis5m = this.ta.runFullAnalysis(m5, '5m');
     const analysis15m = this.ta.runFullAnalysis(m15, '15m');
