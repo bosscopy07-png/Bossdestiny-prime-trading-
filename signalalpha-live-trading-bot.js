@@ -225,9 +225,14 @@ try {
     throw new Error('No exchange available');
   }
 }
-
-
-
+// Test connection
+this.exchange.fetchTime().then(() => {
+  console.log('✅ Exchange connection verified');
+}).catch(err => {
+  console.error('⚠️ Exchange connection test failed:', err.message);
+});
+      
+    
   // ==========================================
 // REPLACE initialize METHOD IN PART 1
 // ==========================================
@@ -673,12 +678,13 @@ async getTopVolumeSymbols(count = 20) {
       'LTC/USDT'
     ];
   }
-}
+
                                   
   sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
   }
 }
+  }
 
 
 // ==========================================
