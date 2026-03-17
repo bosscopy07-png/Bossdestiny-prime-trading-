@@ -226,13 +226,7 @@ try {
   }
 }
 
-// Test connection
-this.exchange.fetchTime().then(() => {
-  console.log('✅ Exchange connection verified');
-}).catch(err => {
-  console.error('⚠️ Exchange connection test failed:', err.message);
-});
-    
+
 
   // ==========================================
 // REPLACE initialize METHOD IN PART 1
