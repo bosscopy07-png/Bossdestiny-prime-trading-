@@ -58,7 +58,7 @@ const CONFIG = {
   // Exchange Configuration
   EXCHANGE: {
     SANDBOX: process.env.SANDBOX === 'true',
-    DEFAULT_TYPE: 'swap',
+    DEFAULT_TYPE: 'future',
     ID: 'bingx',
   },
   
