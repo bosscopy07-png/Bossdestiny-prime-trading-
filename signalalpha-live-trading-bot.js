@@ -1778,35 +1778,75 @@ class RealTimeSignalGenerator extends EventEmitter {
   // MULTI-TIMEFRAME ANALYSIS
   // ==========================================
   
-  async analyzeSymbol(symbol) {
-    console.log(`🔍 Analyzing ${symbol}...`);
-    
+  // ==========================================
+// ADD TO PART 4 - Beginning of analyzeSymbol method
+// ==========================================
+
+async analyzeSymbol(symbol) {
+  // Validate and normalize symbol
+  if (!symbol) {
+    console.log('⛔ No symbol provided');
+    return null;
+  }
+
+  // Ensure proper CCXT perpetual format
+  let normalizedSymbol = symbol;
+  if (!symbol.includes(':USDT')) {
+    // Convert BTC/USDT or BTCUSDT to BTC/USDT:USDT
+    const base = symbol.replace('/USDT', '').replace('USDT', '').toUpperCase();
+    normalizedSymbol = `${base}/USDT:USDT`;
+    console.log(`🔄 Normalized ${symbol} → ${normalizedSymbol}`);
+  }
+
+  console.log(`🔍 Analyzing ${normalizedSymbol}...`);
+  
+  try {
+    // Verify symbol exists in markets
+    if (!this.marketData.perpetualMarkets.includes(normalizedSymbol)) {
+      console.log(`⛔ Symbol not in perpetual markets: ${normalizedSymbol}`);
+      // Try to find close match
+      const match = this.marketData.perpetualMarkets.find(m => 
+        m.includes(normalizedSymbol.split('/')[0])
+      );
+      if (match) {
+        console.log(`🔍 Found alternative: ${match}`);
+        normalizedSymbol = match;
+      } else {
+        return null;
+      }
+    }
+
+    // Fetch multi-timeframe data with error handling
+    let m5, m15, h1, h4;
     try {
-      // Fetch multi-timeframe data with staggered limits
-      const [m5, m15, h1, h4] = await Promise.all([
-        this.marketData.fetchOHLCV(symbol, '5m', 100),
-        this.marketData.fetchOHLCV(symbol, '15m', 100),
-        this.marketData.fetchOHLCV(symbol, '1h', 80),
-        this.marketData.fetchOHLCV(symbol, '4h', 50),
+      [m5, m15, h1, h4] = await Promise.all([
+        this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100),
+        this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100),
+        this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80),
+        this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50).catch(() => null), // 4H optional
       ]);
+    } catch (fetchErr) {
+      console.log(`⛔ Fetch error for ${normalizedSymbol}: ${fetchErr.message}`);
+      return null;
+    }
 
-      if (!m15 || !h1) {
-        console.log(`⚠️ Insufficient data for ${symbol}`);
-        return null;
-      }
+    if (!m15 || m15.length < 50 || !h1 || h1.length < 30) {
+      console.log(`⚠️ Insufficient OHLCV data for ${normalizedSymbol}`);
+      return null;
+    }
 
-      const currentPrice = await this.marketData.getCurrentPrice(symbol);
-      if (!currentPrice) {
-        console.log(`⚠️ No price data for ${symbol}`);
-        return null;
-      }
+    const currentPrice = await this.marketData.getCurrentPrice(normalizedSymbol);
+    if (!currentPrice || currentPrice <= 0) {
+      console.log(`⚠️ Invalid price for ${normalizedSymbol}: ${currentPrice}`);
+      return null;
+    }
 
-      // Volume check (relaxed)
-      const volume24h = await this.marketData.get24hVolume(symbol);
-      if (volume24h < CONFIG.TA.MIN_VOLUME_USD) {
-        console.log(`⚠️ Low volume for ${symbol}: $${volume24h.toLocaleString()}`);
-        return null;
-      }
+    // Volume check (relaxed)
+    const volume24h = await this.marketData.get24hVolume(normalizedSymbol);
+    if (volume24h < CONFIG.TA.MIN_VOLUME_USD) {
+      console.log(`⚠️ Low volume for ${normalizedSymbol}: $${volume24h?.toLocaleString() || 'N/A'}`);
+      return null;
+    }
 
       // Run full analysis on each timeframe
       const analysis5m = this.ta.runFullAnalysis(m5, '5m');
