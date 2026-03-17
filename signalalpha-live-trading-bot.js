@@ -189,12 +189,15 @@ class MarketDataEngine extends EventEmitter {
 
     console.log('🏗️ Initializing MarketDataEngine...');
 
+// Initialize CCXT exchange with aggressive rate limiting
 try {
-  // Try BingX first
-  this.exchange = new ccxt.bingx({
+  // Try Binance first (more reliable for OHLCV)
+  this.exchange = new ccxt.binance({
     enableRateLimit: true,
+    rateLimit: 100, // 100ms between requests
     options: {
-      defaultType: 'swap',
+      defaultType: 'future', // USDT-M futures
+      adjustForTimeDifference: true,
     },
   });
   
@@ -202,74 +205,103 @@ try {
     this.exchange.setSandboxMode(true);
   }
   
-  console.log(`✅ Exchange initialized: bingx`);
-} catch (err) {
-  console.error('❌ Failed to initialize bingx:', err.message);
+  console.log(`✅ Exchange initialized: binance (USDT-M Futures)`);
   
-  // Fallback to Binance
+} catch (err) {
+  console.error('❌ Failed to initialize binance:', err.message);
+  
+  // Fallback to BingX
   try {
-    this.exchange = new ccxt.binance({
+    this.exchange = new ccxt.bingx({
       enableRateLimit: true,
+      rateLimit: 200,
       options: {
-        defaultType: 'future',
+        defaultType: 'swap',
       },
     });
     
-    if (CONFIG.EXCHANGE.SANDBOX) {
-      this.exchange.setSandboxMode(true);
-    }
-    
-    console.log('⚠️ Fallback to binance exchange');
+    console.log('⚠️ Fallback to bingx exchange');
   } catch (err2) {
-    console.error('❌ Failed to initialize fallback:', err2.message);
     throw new Error('No exchange available');
   }
 }
+
+// Test connection
+this.exchange.fetchTime().then(() => {
+  console.log('✅ Exchange connection verified');
+}).catch(err => {
+  console.error('⚠️ Exchange connection test failed:', err.message);
+});
     
-    this.priceCache = new Map();
-    this.ohlcvCache = new Map();
-    this.wsConnections = new Map();
 
-    this.perpetualMarkets = [];
-    this.isRunning = false;
-  }
+  // ==========================================
+// REPLACE initialize METHOD IN PART 1
+// ==========================================
 
-  // =========================
-  // INIT
-  // =========================
-  async initialize() {
-    console.log('🚀 Initializing MarketDataEngine...');
+async initialize() {
+  console.log('🚀 Starting MarketDataEngine initialization...');
+  
+  try {
+    // Load markets with retry
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        console.log('📡 Loading markets from exchange...');
+        await this.exchange.loadMarkets();
+        break;
+      } catch (err) {
+        retries--;
+        if (retries === 0) throw err;
+        console.log(`⚠️ Market load failed, retrying... (${retries} left)`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    
+    const marketCount = Object.keys(this.exchange.markets).length;
+    logger.info(`Loaded ${marketCount} markets`);
+    console.log(`✅ Loaded ${marketCount} markets`);
 
-    await this.exchange.loadMarkets();
-
-    const markets = Object.values(this.exchange.markets);
-
-    // ✅ STRICT FILTER (NO JUNK)
-    this.perpetualMarkets = markets
+    // Filter active USDT perpetual futures
+    console.log('🔍 Filtering perpetual markets...');
+    this.perpetualMarkets = Object.values(this.exchange.markets)
       .filter(m => {
-        const isContract = m.contract === true;
-        const isUSDT = m.quote === 'USDT';
-        const isLinear = m.linear === true;
-
-        const cleanSymbol = m.symbol.replace(':USDT', '');
-        const isClean = /^[A-Z0-9]+\/USDT$/.test(cleanSymbol);
-
-        return isContract && isUSDT && isLinear && m.active && isClean;
+        // Binance futures format: BTC/USDT
+        // Must be active, USDT quoted, and a future/swap
+        const isActive = m.active !== false;
+        const isUSDT = m.quote === 'USDT' || m.quoteId === 'USDT';
+        const isFuture = m.type === 'future' || m.type === 'swap';
+        const isPerp = m.linear === true || m.contract === true;
+        
+        return isActive && isUSDT && (isFuture || isPerp);
       })
-      .map(m => m.symbol.replace(':USDT', '')) // ✅ normalize
+      .map(m => m.symbol)
       .sort();
+    
+    logger.info(`Found ${this.perpetualMarkets.length} active perpetual markets`);
+    console.log(`✅ Found ${this.perpetualMarkets.length} perpetual markets`);
+    console.log(`📊 Top markets: ${this.perpetualMarkets.slice(0, 10).join(', ')}...`);
 
-    console.log(`✅ ${this.perpetualMarkets.length} clean perpetual markets loaded`);
+    if (this.perpetualMarkets.length === 0) {
+      throw new Error('No perpetual markets found - check exchange configuration');
+    }
 
+    // Start WebSocket feeds
+    console.log('🔌 Starting WebSocket feeds...');
     this.startWebSocketFeeds();
-    this.startOhlcvPolling();
-
+    
+    // Start polling for OHLCV (delayed)
+    console.log('📈 Starting OHLCV polling...');
+    setTimeout(() => this.startOhlcvPolling(), 5000);
+    
     this.isRunning = true;
+    console.log('🎯 MarketDataEngine fully initialized and running');
+    
+  } catch (err) {
+    logger.error('Failed to initialize market data:', err);
+    console.error('❌ MarketDataEngine initialization failed:', err.message);
+    throw err;
   }
-
-  // =========================
-  // NORMALIZE SYMBOL
-  // =========================
+}
 
   // ==========================================
 // REPLACE get24hVolume in Part 1
@@ -293,79 +325,113 @@ async get24hVolume(symbol) {
 }
   
 // ==========================================
-// ADD THESE METHODS TO MarketDataEngine CLASS (Part 1)
-// Insert after: console.log('✅ MarketDataEngine constructed');
+// REPLACE ALL SYMBOL METHODS IN PART 1
 // ==========================================
 
-// Validate if symbol exists in loaded markets
+// Check if symbol is valid and active
 isValidSymbol(symbol) {
-  if (!symbol) return false;
-  if (!this.exchange.markets) return false;
+  if (!symbol || !this.exchange.markets) return false;
   
-  // Check exact match
-  if (this.exchange.markets[symbol]) return true;
+  // Direct match
+  if (this.exchange.markets[symbol]) {
+    const m = this.exchange.markets[symbol];
+    return m.active !== false;
+  }
   
-  // Check alternative formats
-  const normalized = symbol.replace(':USDT', '/USDT');
-  if (this.exchange.markets[normalized]) return true;
-  
-  // Check if any market contains this base
-  const base = symbol.split('/')[0];
-  const found = Object.keys(this.exchange.markets).some(m => 
-    m.startsWith(base + '/') && m.includes('USDT')
-  );
-  
-  return found;
+  return false;
 }
 
-// Normalize any symbol format to exchange-specific format
+// Normalize symbol to exchange format
 normalizeSymbol(symbol) {
   if (!symbol) return null;
   
-  // Already in correct format
-  if (symbol.includes(':USDT') && this.exchange.markets[symbol]) {
-    return symbol;
+  // Already valid
+  if (this.isValidSymbol(symbol)) return symbol;
+  
+  // Try common variations
+  const variations = [
+    symbol,                                           // Original
+    symbol.replace(':USDT', ''),                      // Remove :USDT
+    symbol.replace('/USDT:USDT', '/USDT'),           // Binance format
+    symbol.replace('/USDT', '/USDT:USDT'),           // Add :USDT
+    symbol.replace('USDT', '/USDT'),                 // Add slash
+    symbol + '/USDT',                                // Add /USDT
+    symbol + ':USDT',                                // Add :USDT
+    symbol + '/USDT:USDT',                           // Add full suffix
+  ];
+  
+  for (const variant of variations) {
+    if (this.isValidSymbol(variant)) {
+      return variant;
+    }
   }
   
-  // Convert BTC/USDT to BTC/USDT:USDT
-  if (symbol.includes('/USDT') && !symbol.includes(':')) {
-    const perpetual = symbol.replace('/USDT', '/USDT:USDT');
-    if (this.exchange.markets[perpetual]) return perpetual;
-  }
+  // Try to find by base currency
+  const base = symbol.split('/')[0].replace('USDT', '');
+  const found = Object.keys(this.exchange.markets).find(m => {
+    const market = this.exchange.markets[m];
+    return market.base === base && market.quote === 'USDT' && market.active !== false;
+  });
   
-  // Convert BTCUSDT to BTC/USDT:USDT
-  if (!symbol.includes('/')) {
-    const base = symbol.replace('USDT', '');
-    const perpetual = `${base}/USDT:USDT`;
-    if (this.exchange.markets[perpetual]) return perpetual;
-    
-    // Try with dash (e.g., HYPE-USDT)
-    const dashed = `${base}/USDT:USDT`;
-    if (this.exchange.markets[dashed]) return dashed;
-  }
-  
-  // Return original if we can't normalize
-  return symbol;
+  return found || null;
 }
 
-// Safe OHLCV fetch with validation
+// Safe OHLCV fetch with all protections
 async safeFetchOHLCV(symbol, timeframe, limit = 100) {
-  if (!this.isValidSymbol(symbol)) {
-    console.log(`⛔ Invalid symbol: ${symbol}`);
+  if (!symbol) {
+    console.log(`⛔ No symbol provided`);
+    return null;
+  }
+  
+  // Ensure symbol is valid
+  const validSymbol = this.normalizeSymbol(symbol);
+  if (!validSymbol) {
+    console.log(`⛔ Cannot normalize symbol: ${symbol}`);
     return null;
   }
   
   try {
-    return await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
-  } catch (err) {
-    if (err.message.includes('Invalid symbol')) {
-      console.log(`⛔ Invalid symbol (exchange): ${symbol}`);
+    // Check if market exists and is active
+    const market = this.exchange.markets[validSymbol];
+    if (!market) {
+      console.log(`⛔ Market not found: ${validSymbol}`);
       return null;
     }
-    throw err;
-  }
-  }
     
+    if (market.active === false) {
+      console.log(`⛔ Market inactive: ${validSymbol}`);
+      return null;
+    }
+    
+    // Fetch with explicit error handling
+    const ohlcv = await this.exchange.fetchOHLCV(validSymbol, timeframe, undefined, limit);
+    
+    if (!ohlcv || !Array.isArray(ohlcv) || ohlcv.length === 0) {
+      console.log(`⚠️ Empty OHLCV for ${validSymbol} ${timeframe}`);
+      return null;
+    }
+    
+    return ohlcv;
+    
+  } catch (err) {
+    // Don't log rate limit errors as they're expected
+    if (err.message.includes('rate limit') || err.message.includes('RateLimit')) {
+      console.log(`⏱️ Rate limit hit for ${validSymbol}`);
+      await new Promise(r => setTimeout(r, 1000));
+      return null;
+    }
+    
+    // Log other errors
+    if (!err.message.includes('Invalid symbol')) {
+      console.log(`⚠️ OHLCV error for ${validSymbol}: ${err.message}`);
+    } else {
+      console.log(`⛔ Invalid symbol: ${validSymbol}`);
+    }
+    
+    return null;
+  }
+  }
+      
 
   // ==========================================
 // REPLACE startWebSocketFeeds in Part 1
@@ -428,62 +494,72 @@ startWebSocketFeeds() {
 // ==========================================
 
 startOhlcvPolling() {
-  console.log('⏱️ Starting OHLCV polling (15s interval)...');
+  console.log('⏱️ Starting OHLCV polling (30s interval)...');
   
   const poll = async () => {
     if (!this.isRunning) return;
     
     try {
-      // Get top symbols and validate them
-      const rawSymbols = this.perpetualMarkets.slice(0, 30);
-      const validSymbols = rawSymbols.filter(s => this.isValidSymbol(s));
+      // Get valid symbols only
+      const validSymbols = this.perpetualMarkets
+        .filter(s => this.isValidSymbol(s))
+        .slice(0, 20); // Limit to top 20
       
       if (validSymbols.length === 0) {
         console.log('⚠️ No valid symbols to poll');
         await new Promise(r => setTimeout(r, 30000));
-        if (this.isRunning) setTimeout(poll, 15000);
+        if (this.isRunning) setTimeout(poll, 30000);
         return;
       }
       
-      console.log(`🔄 Polling ${validSymbols.length} valid symbols...`);
+      console.log(`🔄 Polling ${validSymbols.length} symbols...`);
+      let successCount = 0;
       
       for (const symbol of validSymbols) {
         if (!this.isRunning) break;
         
-        for (const timeframe of CONFIG.TA.TIMEFRAMES) {
+        // Only fetch 15m and 1h to reduce load
+        const timeframes = ['15m', '1h'];
+        
+        for (const timeframe of timeframes) {
           try {
             const ohlcv = await this.safeFetchOHLCV(symbol, timeframe, 100);
+            
             if (ohlcv && ohlcv.length > 0) {
               const key = `${symbol}_${timeframe}`;
               this.ohlcvCache.set(key, {
                 data: ohlcv,
                 timestamp: Date.now(),
               });
+              successCount++;
             }
-            await new Promise(r => setTimeout(r, 100)); // Rate limit protection
+            
+            // Wait between requests to respect rate limits
+            await new Promise(r => setTimeout(r, 200));
+            
           } catch (err) {
-            // Silent continue on individual fetch error
+            // Continue on error
           }
         }
       }
       
       this.lastUpdate = Date.now();
-      console.log(`✅ Poll cycle complete, cache size: ${this.ohlcvCache.size}`);
+      console.log(`✅ Poll complete: ${successCount} fetches, cache: ${this.ohlcvCache.size}`);
       
     } catch (err) {
       console.error('❌ Polling error:', err.message);
     }
     
-    // Schedule next poll
+    // Schedule next poll (30 seconds)
     if (this.isRunning) {
-      setTimeout(poll, 15000);
+      setTimeout(poll, 30000);
     }
   };
   
   // Start first poll after delay
-  setTimeout(poll, 5000);
+  setTimeout(poll, 10000);
   console.log('✅ OHLCV polling active');
-        }
+}
     
   // =========================
   // FETCH OHLCV
