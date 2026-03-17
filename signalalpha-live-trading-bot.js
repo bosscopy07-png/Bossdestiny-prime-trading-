@@ -183,7 +183,7 @@ class MarketDataEngine extends EventEmitter {
     } catch (err) {
       console.error('❌ Exchange init failed, fallback to binance');
 
-      this.exchange = new ccxt.binance({
+      this.exchange = new ccxt.bitget({
         enableRateLimit: true,
         options: { defaultType: 'future' },
       });
