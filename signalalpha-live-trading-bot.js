@@ -1099,7 +1099,39 @@ class InstitutionalTA {
 // ==========================================
 // ADD TO PART 1 - TradeLogger constructor
 // ==========================================
+const fs = require('fs').promises;
 
+class TradeLogger {
+  constructor(filename = 'trades.log') {
+    this.filename = filename;
+    this.dailyStats = new Map();
+
+    // Ensure file exists
+    this.ensureFile().then(() => {
+      console.log(`📁 TradeLogger initialized: ${this.filename}`);
+    }).catch(err => {
+      console.error(`❌ Failed to initialize TradeLogger file: ${err.message}`);
+    });
+  }
+
+  async ensureFile() {
+    try {
+      await fs.access(this.filename); // Check if file exists
+    } catch {
+      // File doesn't exist → create empty file
+      await fs.writeFile(this.filename, '');
+    }
+  }
+
+  async logTrade(trade) {
+    try {
+      const line = JSON.stringify(trade) + '\n';
+      await fs.appendFile(this.filename, line);
+    } catch (err) {
+      console.error(`❌ Failed to log trade: ${err.message}`);
+    }
+  }
+}
 
 
 // ==========================================
