@@ -1099,7 +1099,6 @@ class InstitutionalTA {
 // ==========================================
 // ADD TO PART 1 - TradeLogger constructor
 // ==========================================
-const fs = require('fs').promises;
 
 class TradeLogger {
   constructor(filename = 'trades.log') {
