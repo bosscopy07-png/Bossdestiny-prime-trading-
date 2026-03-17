@@ -1097,6 +1097,22 @@ class InstitutionalTA {
 }
 
 // ==========================================
+// ADD TO PART 1 - TradeLogger constructor
+// ==========================================
+
+constructor(filename = 'trades.log') {
+  this.filename = filename;
+  this.dailyStats = new Map();
+  
+  // Ensure file exists
+  fs.access(filename).catch(() => {
+    fs.writeFile(filename, '').catch(() => {});
+  });
+  
+  console.log(`📁 TradeLogger initialized: ${filename}`);
+}
+
+// ==========================================
 // END OF PART 2
 //
 // NEXT: Copy Part 3 below this section
@@ -2299,21 +2315,6 @@ async analyzeSymbol(symbol) {
   }
 }
 
-// ==========================================
-// ADD TO PART 1 - TradeLogger constructor
-// ==========================================
-
-constructor(filename = 'trades.log') {
-  this.filename = filename;
-  this.dailyStats = new Map();
-  
-  // Ensure file exists
-  fs.access(filename).catch(() => {
-    fs.writeFile(filename, '').catch(() => {});
-  });
-  
-  console.log(`📁 TradeLogger initialized: ${filename}`);
-}
 
 // ==========================================
 // TELEGRAM BOT INTERFACE
