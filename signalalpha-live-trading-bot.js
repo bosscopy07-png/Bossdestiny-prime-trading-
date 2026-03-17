@@ -630,33 +630,57 @@ async getCurrentPrice(symbol) {
   // =========================
   // TOP VOLUME
   // =========================
-  async getTopVolumeSymbols(count = 20) {
+  // ==========================================
+// REPLACE getTopVolumeSymbols IN PART 1
+// ==========================================
+
+async getTopVolumeSymbols(count = 20) {
   console.log(`🏆 Fetching top ${count} volume symbols...`);
+  
   try {
+    // Fetch tickers
     const tickers = await this.exchange.fetchTickers();
-    const perpetuals = Object.values(tickers)
+    
+    // Filter and sort
+    const validTickers = Object.values(tickers)
       .filter(t => {
-        // Must be a perpetual swap/future with USDT
         const symbol = t.symbol || '';
-        const isPerp = symbol.includes(':USDT') || symbol.includes('/USDT:');
-        const hasVolume = (t.quoteVolume || 0) > CONFIG.TA.MIN_VOLUME_USD;
-        const isActive = t.last !== undefined && t.last > 0;
-        return isPerp && hasVolume && isActive;
+        const market = this.exchange.markets[symbol];
+        
+        if (!market) return false;
+        if (market.active === false) return false;
+        if (market.quote !== 'USDT') return false;
+        if (market.type !== 'future' && market.type !== 'swap') return false;
+        
+        const volume = t.quoteVolume || 0;
+        return volume > CONFIG.TA.MIN_VOLUME_USD;
       })
       .sort((a, b) => (b.quoteVolume || 0) - (a.quoteVolume || 0))
-      .slice(0, count)
-      .map(t => t.symbol); // Keep original exchange format
+      .slice(0, count);
     
-    console.log(`✅ Top volumes: ${perpetuals.slice(0, 5).join(', ')}...`);
-    return perpetuals;
+    const symbols = validTickers.map(t => t.symbol);
+    
+    console.log(`✅ Top volumes: ${symbols.slice(0, 5).join(', ')}...`);
+    return symbols;
+    
   } catch (err) {
-    console.error('❌ Failed to fetch top volumes:', err.message);
-    // Return safe defaults in CCXT format
-    return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT'];
+    console.error('❌ Failed to fetch volumes:', err.message);
+    // Return safe defaults for Binance futures
+    return [
+      'BTC/USDT',
+      'ETH/USDT',
+      'SOL/USDT',
+      'BNB/USDT',
+      'XRP/USDT',
+      'DOGE/USDT',
+      'ADA/USDT',
+      'MATIC/USDT',
+      'LINK/USDT',
+      'LTC/USDT'
+    ];
   }
-                                  }
-
-  
+}
+                                  
   sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
   }
