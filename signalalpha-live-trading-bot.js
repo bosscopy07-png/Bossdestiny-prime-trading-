@@ -58,7 +58,7 @@ const CONFIG = {
   // Exchange Configuration
   EXCHANGE: {
     SANDBOX: process.env.SANDBOX === 'true',
-    DEFAULT_TYPE: 'spot',
+    DEFAULT_TYPE: 'swap',
     ID: 'bingx',
   },
   
@@ -233,57 +233,89 @@ class MarketDataEngine extends EventEmitter {
   // =========================
   // NORMALIZE SYMBOL
   // =========================
-  normalizeSymbol(symbol) {
-    return symbol.replace(':USDT', '');
-  }
+  // ==========================================
+// ADD TO PART 1 - After MarketDataEngine constructor
+// ==========================================
 
-  isValidSymbol(symbol) {
-    return this.exchange.markets[symbol] !== undefined;
-  }
+// Add this method to MarketDataEngine class
+normalizeSymbol(symbol) {
+  // Handle various input formats and convert to exchange-specific format
+  if (!symbol) return null;
+  
+  // If already in CCXT perpetual format (e.g., BTC/USDT:USDT)
+  if (symbol.includes(':USDT')) return symbol;
+  
+  // If in simple format (e.g., BTC/USDT or BTCUSDT)
+  let base = symbol.replace('/USDT', '').replace('USDT', '').toUpperCase();
+  
+  // Return CCXT perpetual format
+  return `${base}/USDT:USDT`;
+}
+
+// ==========================================
+// REPLACE getTopVolumeSymbols in Part 1
+// ==========================================
+
+
 
   // =========================
   // WEBSOCKET
   // =========================
-  startWebSocketFeeds() {
-    const pairs = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt'];
+  // ==========================================
+// REPLACE startWebSocketFeeds in Part 1
+// ==========================================
 
-    for (const pair of pairs) {
-      const wsUrl = `${CONFIG.DATA.BINANCE_FUTURES_WS}/${pair}@kline_1m`;
-
-      const connect = () => {
-        const ws = new WebSocket(wsUrl);
-
-        ws.on('open', () => {
-          console.log(`✅ WS connected: ${pair}`);
-        });
-
-        ws.on('message', (data) => {
-          try {
-            const msg = JSON.parse(data);
-
-            if (msg.k) {
-              this.priceCache.set(pair, {
-                price: parseFloat(msg.k.c),
-                volume: parseFloat(msg.k.v),
-                timestamp: Date.now(),
-              });
-            }
-          } catch {}
-        });
-
-        ws.on('close', () => {
-          console.warn(`⚠️ WS reconnecting: ${pair}`);
-          setTimeout(connect, 5000);
-        });
-
-        ws.on('error', () => {});
-
-        this.wsConnections.set(pair, ws);
-      };
-
-      connect();
+startWebSocketFeeds() {
+  // Major pairs - use Binance native format (lowercase, no slash)
+  const majorPairs = ['btcusdt', 'ethusdt', 'solusdt', 'bnbusdt', 'xrpusdt', 'dogeusdt', 'adausdt', 'maticusdt'];
+  console.log(`🔌 Starting WebSocket connections for ${majorPairs.length} pairs...`);
+  
+  for (const pair of majorPairs) {
+    const wsUrl = `${CONFIG.DATA.BINANCE_FUTURES_WS}/${pair}@kline_1m`;
+    
+    try {
+      const ws = new WebSocket(wsUrl);
+      
+      ws.on('open', () => {
+        console.log(`✅ WebSocket connected: ${pair}`);
+      });
+      
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data);
+          if (msg.k) {
+            this.priceCache.set(pair, {
+              price: parseFloat(msg.k.c),
+              volume: parseFloat(msg.k.v),
+              timestamp: Date.now(),
+            });
+          }
+        } catch (err) {
+          // Silent parse errors
+        }
+      });
+      
+      ws.on('error', (err) => {
+        console.error(`❌ WebSocket error for ${pair}:`, err.message);
+      });
+      
+      ws.on('close', () => {
+        console.warn(`⚠️ WebSocket closed for ${pair}, reconnecting in 10s...`);
+        setTimeout(() => {
+          this.wsConnections.delete(pair);
+          const newWs = new WebSocket(wsUrl);
+          this.wsConnections.set(pair, newWs);
+        }, 10000);
+      });
+      
+      this.wsConnections.set(pair, ws);
+    } catch (err) {
+      console.error(`❌ Failed to connect WebSocket for ${pair}:`, err.message);
     }
   }
+  console.log('✅ All WebSocket connections initiated');
+}
+  
 
   // =========================
   // OHLCV POLLING
@@ -383,26 +415,32 @@ class MarketDataEngine extends EventEmitter {
   // TOP VOLUME
   // =========================
   async getTopVolumeSymbols(count = 20) {
-    try {
-      const tickers = await this.exchange.fetchTickers();
-
-      return Object.values(tickers)
-        .filter(t => {
-          const symbol = t.symbol?.replace(':USDT', '');
-          return (
-            symbol &&
-            /^[A-Z0-9]+\/USDT$/.test(symbol) &&
-            t.quoteVolume > CONFIG.TA.MIN_VOLUME_USD
-          );
-        })
-        .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, count)
-        .map(t => t.symbol.replace(':USDT', ''));
-    } catch {
-      return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
-    }
+  console.log(`🏆 Fetching top ${count} volume symbols...`);
+  try {
+    const tickers = await this.exchange.fetchTickers();
+    const perpetuals = Object.values(tickers)
+      .filter(t => {
+        // Must be a perpetual swap/future with USDT
+        const symbol = t.symbol || '';
+        const isPerp = symbol.includes(':USDT') || symbol.includes('/USDT:');
+        const hasVolume = (t.quoteVolume || 0) > CONFIG.TA.MIN_VOLUME_USD;
+        const isActive = t.last !== undefined && t.last > 0;
+        return isPerp && hasVolume && isActive;
+      })
+      .sort((a, b) => (b.quoteVolume || 0) - (a.quoteVolume || 0))
+      .slice(0, count)
+      .map(t => t.symbol); // Keep original exchange format
+    
+    console.log(`✅ Top volumes: ${perpetuals.slice(0, 5).join(', ')}...`);
+    return perpetuals;
+  } catch (err) {
+    console.error('❌ Failed to fetch top volumes:', err.message);
+    // Return safe defaults in CCXT format
+    return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT'];
   }
+                                  }
 
+  
   sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
   }
