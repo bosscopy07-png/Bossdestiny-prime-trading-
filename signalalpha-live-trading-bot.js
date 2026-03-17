@@ -1154,7 +1154,7 @@ async analyzeSymbol(symbol) { console.info(Analyzing ${symbol}...); try { consol
   if (!m5 || !m15 || !h1 || !h4) {
     console.warn(`Insufficient data for ${symbol}`);
     return null;
-  }
+  }}
 
   const currentPrice = await this.marketData.getCurrentPrice(symbol);
   if (!currentPrice) {
