@@ -1014,4 +1014,650 @@ class InstitutionalTA {
     // Run all analyses
     const trend = this.analyzeTrend(ohlcv, timeframe);
     const rsi = this.calculateRSI(closes);
-    const macd = this.calc
+    const macd = this.calculateMACD(closes);
+    const volume = this.analyzeVolume(ohlcv);
+    const levels = this.findKeyLevels(ohlcv, 2);
+    const structure = this.analyzeStructure(ohlcv);
+    const sweep = this.detectLiquiditySweep(ohlcv, levels);
+    const atr = this.calculateATR(ohlcv);
+
+    // Calculate Fibonacci if we have valid range
+    let fibonacci = null;
+    if (levels.support && levels.resistance) {
+      fibonacci = this.calculateFibonacci(levels.resistance, levels.support);
+    }
+
+    return {
+      timeframe,
+      price: currentPrice,
+      trend,
+      momentum: { rsi, macd },
+      volume,
+      levels,
+      structure,
+      sweep,
+      fibonacci,
+      atr,
+      timestamp: Date.now(),
+    };
+  }
+}
+
+// ==========================================
+// END OF PART 2
+//
+// NEXT: Copy Part 3 below this section
+// Part 3 contains: Confidence Engine & Strategy Detector
+// ==========================================
+// ==========================================
+// PART 3: CONFIDENCE ENGINE & STRATEGY DETECTOR
+// signalalpha-part3.js
+// Continue from Part 2
+// ==========================================
+
+// ==========================================
+// BALANCED CONFIDENCE SCORING ENGINE
+// Key: 60-100 scale, realistic weights, no fake inflation
+// ==========================================
+
+class ConfidenceEngine {
+  constructor() {
+    this.weights = {
+      trend: 20,      // Trend alignment
+      momentum: 20,   // RSI + MACD confluence
+      volume: 15,     // Volume confirmation
+      levels: 15,     // S/R quality
+      structure: 15,  // Market structure/BOS
+      rr: 15,         // Risk:Reward ratio
+    };
+    console.log('🎯 ConfidenceEngine initialized with balanced weights');
+  }
+
+  calculate(analysis) {
+    let score = 0;
+    const details = [];
+    const bonuses = [];
+    const penalties = [];
+
+    // ==========================================
+    // 1. TREND ANALYSIS (0-20 points)
+    // Balanced: rewards alignment, doesn't punish mixed signals harshly
+    // ==========================================
+    
+    const { trend, multiTimeframe } = analysis;
+    
+    if (multiTimeframe?.alignment && trend?.strength > 60) {
+      // Strong aligned trend across timeframes
+      score += 18;
+      details.push('✅ Strong multi-TF trend alignment (+18)');
+    } else if (multiTimeframe?.alignment && trend?.strength > 40) {
+      // Aligned but moderate strength
+      score += 14;
+      details.push('⚡ Moderate trend alignment (+14)');
+    } else if (trend?.primary !== 'neutral' && trend?.strength > 30) {
+      // Single timeframe trend only
+      score += 10;
+      details.push('📊 Single TF trend present (+10)');
+    } else if (trend?.primary !== 'neutral') {
+      // Weak trend
+      score += 6;
+      details.push('⚠️ Weak trend (+6)');
+    } else {
+      // No trend (ranging)
+      score += 3;
+      details.push('❌ No clear trend - ranging market (+3)');
+    }
+
+    // Bonus: EMA slope steepness (strong momentum)
+    if (Math.abs(trend?.slope || 0) > 0.1) {
+      score += 2;
+      bonuses.push('📈 Strong EMA slope (+2)');
+    }
+
+    // ==========================================
+    // 2. MOMENTUM CONFLUENCE (0-20 points)
+    // Balanced RSI: 35-65 is "active zone", not 30-70 extremes
+    // ==========================================
+    
+    const { momentum } = analysis;
+    const rsi = momentum?.rsi?.value || 50;
+    const macd = momentum?.macd;
+    
+    // RSI scoring (balanced - avoid extremes)
+    let rsiScore = 0;
+    const rsiMid = Math.abs(rsi - 50);
+    
+    if (rsi >= 40 && rsi <= 60) {
+      // Sweet spot - active but not extreme
+      rsiScore = 8;
+      details.push(`✅ RSI in active zone ${rsi.toFixed(1)} (+8)`);
+    } else if (rsi >= 35 && rsi <= 65) {
+      // Good zone
+      rsiScore = 6;
+      details.push(`⚡ RSI moderate ${rsi.toFixed(1)} (+6)`);
+    } else if (rsi >= 30 && rsi <= 70) {
+      // Acceptable but approaching extreme
+      rsiScore = 4;
+      details.push(`⚠️ RSI near extreme ${rsi.toFixed(1)} (+4)`);
+    } else {
+      // Extreme - potential reversal zone
+      rsiScore = 1;
+      details.push(`❌ RSI extreme ${rsi.toFixed(1)} - caution (+1)`);
+    }
+
+    // MACD scoring
+    let macdScore = 0;
+    if (macd?.crossover !== 'none' && macd?.momentum > 0.001) {
+      // Fresh crossover with momentum
+      macdScore = 10;
+      details.push(`✅ MACD ${macd.crossover} crossover (+10)`);
+    } else if (macd?.trend?.includes('bullish') || macd?.trend?.includes('bearish')) {
+      // Established trend (no crossover but directional)
+      macdScore = 7;
+      details.push(`📊 MACD ${macd.trend} (+7)`);
+    } else if (macd?.momentum > 0.0005) {
+      // Weak but present momentum
+      macdScore = 4;
+      details.push(`⚠️ Weak MACD momentum (+4)`);
+    } else {
+      macdScore = 1;
+      details.push(`❌ No MACD momentum (+1)`);
+    }
+
+    // Divergence bonus (separate from main scoring)
+    if (momentum?.rsi?.divergence?.bullish || momentum?.rsi?.divergence?.bearish) {
+      score += 3;
+      bonuses.push('🔄 RSI divergence detected (+3)');
+    }
+
+    score += rsiScore + macdScore;
+
+    // ==========================================
+    // 3. VOLUME CONFIRMATION (0-15 points)
+    // Balanced: 1.3x is good, not requiring 2x+
+    // ==========================================
+    
+    const { volume } = analysis;
+    const volRatio = volume?.ratio || 1;
+    
+    if (volRatio >= 2.0) {
+      score += 13;
+      details.push(`✅ Strong volume ${volRatio.toFixed(1)}x (+13)`);
+    } else if (volRatio >= 1.5) {
+      score += 10;
+      details.push(`⚡ Good volume ${volRatio.toFixed(1)}x (+10)`);
+    } else if (volRatio >= 1.3) {
+      // Threshold lowered from 1.5 to 1.3
+      score += 7;
+      details.push(`📊 Adequate volume ${volRatio.toFixed(1)}x (+7)`);
+    } else if (volRatio >= 1.0) {
+      score += 4;
+      details.push(`⚠️ Average volume ${volRatio.toFixed(1)}x (+4)`);
+    } else {
+      score += 1;
+      details.push(`❌ Low volume ${volRatio.toFixed(1)}x (+1)`);
+    }
+
+    // Volume-price confirmation bonus
+    if (volume?.confirmation) {
+      score += 2;
+      bonuses.push('📈 Volume-price confirmation (+2)');
+    }
+
+    // ==========================================
+    // 4. SUPPORT/RESISTANCE QUALITY (0-15 points)
+    // Balanced: 1 touch is acceptable if level is clear
+    // ==========================================
+    
+    const { levels } = analysis;
+    
+    if (levels?.valid && (levels.supportTouches >= 2 || levels.resistanceTouches >= 2)) {
+      score += 13;
+      details.push(`✅ Tested S/R levels (S:${levels.supportTouches} R:${levels.resistanceTouches}) (+13)`);
+    } else if (levels?.valid && (levels.supportTouches >= 1 || levels.resistanceTouches >= 1)) {
+      // Single touch is acceptable
+      score += 9;
+      details.push(`⚡ Basic S/R present (S:${levels.supportTouches} R:${levels.resistanceTouches}) (+9)`);
+    } else if (levels?.support && levels?.resistance) {
+      // Levels exist but not recently tested
+      score += 6;
+      details.push(`⚠️ S/R levels untested recently (+6)`);
+    } else if (levels?.nearSupport || levels?.nearResistance) {
+      // Price near key level
+      score += 4;
+      details.push(`📍 Price near S/R zone (+4)`);
+    } else {
+      score += 1;
+      details.push(`❌ No clear S/R levels (+1)`);
+    }
+
+    // Range quality bonus (wide enough to trade)
+    if (levels?.range && levels.range / analysis.price > 0.02) {
+      score += 2;
+      bonuses.push('📏 Good S/R range (+2)');
+    }
+
+    // ==========================================
+    // 5. MARKET STRUCTURE (0-15 points)
+    // BOS/CHoCH detection rewards momentum shifts
+    // ==========================================
+    
+    const { structure } = analysis;
+    
+    if (structure?.bos === 'continuation' && structure?.trending) {
+      // Best case: trend continuation with BOS
+      score += 13;
+      details.push(`✅ Trend continuation BOS (+13)`);
+    } else if (structure?.bos !== 'none' && structure?.strength > 50) {
+      // Strong breakout/breakdown
+      score += 10;
+      details.push(`⚡ Structure break (${structure.bos}) (+10)`);
+    } else if (structure?.bos !== 'none') {
+      // Weak BOS
+      score += 7;
+      details.push(`📊 Weak structure break (+7)`);
+    } else if (structure?.trending && structure?.strength > 40) {
+      // Trending but no recent BOS
+      score += 5;
+      details.push(`⚠️ Trending, no recent BOS (+5)`);
+    } else if (structure?.consolidation) {
+      // Ranging - harder to trade
+      score += 3;
+      details.push(`❌ Consolidating market (+3)`);
+    } else {
+      score += 2;
+      details.push(`❓ Unclear structure (+2)`);
+    }
+
+    // Structure strength bonus
+    if (structure?.strength > 70) {
+      score += 2;
+      bonuses.push('💪 Strong market structure (+2)');
+    }
+
+    // ==========================================
+    // 6. RISK:REWARD RATIO (0-15 points)
+    // Balanced: 1.5:1 minimum, 3:1 is excellent
+    // ==========================================
+    
+    const rr = analysis.setup?.riskReward || 0;
+    
+    if (rr >= 3.0) {
+      score += 15;
+      details.push(`✅ Excellent R:R ${rr.toFixed(1)}:1 (+15)`);
+    } else if (rr >= 2.5) {
+      score += 12;
+      details.push(`⚡ Very good R:R ${rr.toFixed(1)}:1 (+12)`);
+    } else if (rr >= 2.0) {
+      score += 10;
+      details.push(`📊 Good R:R ${rr.toFixed(1)}:1 (+10)`);
+    } else if (rr >= 1.5) {
+      // Minimum threshold lowered from 2.0 to 1.5
+      score += 7;
+      details.push(`⚠️ Acceptable R:R ${rr.toFixed(1)}:1 (+7)`);
+    } else if (rr >= 1.2) {
+      score += 3;
+      details.push(`❌ Poor R:R ${rr.toFixed(1)}:1 (+3)`);
+    } else {
+      score += 0;
+      penalties.push(`🚫 Bad R:R ${rr.toFixed(1)}:1 (min 1.5:1)`);
+    }
+
+    // ==========================================
+    // PENALTIES (avoid fake signals)
+    // ==========================================
+    
+    // Penalty: Extreme volatility (choppy market)
+    if (analysis.atr?.percent > 5) {
+      score -= 5;
+      penalties.push('⚠️ High volatility (-5)');
+    }
+
+    // Penalty: Very low volume (illiquid)
+    if (volume?.ratio < 0.7) {
+      score -= 3;
+      penalties.push('⚠️ Very low volume (-3)');
+    }
+
+    // Penalty: Against major trend on 4H
+    if (multiTimeframe?.higherTF?.primary !== 'neutral' && 
+        multiTimeframe?.higherTF?.primary !== trend?.primary) {
+      score -= 4;
+      penalties.push('⚠️ Against 4H trend (-4)');
+    }
+
+    // ==========================================
+    // FINAL SCORE CALCULATION
+    // ==========================================
+    
+    // Clamp score 0-100
+    let finalScore = Math.max(0, Math.min(100, score));
+    
+    // Round to nearest 5 for cleaner display
+    finalScore = Math.round(finalScore / 5) * 5;
+
+    // Determine tier and recommendation
+    let tier, passed, confidence, recommendation;
+
+    if (finalScore >= 80) {
+      tier = 'A+';
+      passed = true;
+      confidence = 'high';
+      recommendation = 'Strong signal - Execute with standard size';
+    } else if (finalScore >= 70) {
+      tier = 'A';
+      passed = true;
+      confidence = 'high';
+      recommendation = 'Good signal - Execute with standard size';
+    } else if (finalScore >= 60) {
+      tier = 'B+';
+      passed = true;
+      confidence = 'medium';
+      recommendation = 'Moderate signal - Reduce position size 25%';
+    } else if (finalScore >= 50) {
+      tier = 'B';
+      passed = true;
+      confidence = 'medium';
+      recommendation = 'Marginal signal - Reduce size 50%, tight stops';
+    } else if (finalScore >= 40) {
+      tier = 'C';
+      passed = false;
+      confidence = 'low';
+      recommendation = 'Weak signal - Avoid or paper trade';
+    } else {
+      tier = 'D';
+      passed = false;
+      confidence = 'low';
+      recommendation = 'No trade - Insufficient confluence';
+    }
+
+    // Override: Must have minimum R:R regardless of score
+    if (rr < CONFIG.RISK.MIN_RR) {
+      passed = false;
+      recommendation = 'R:R below minimum - No trade';
+    }
+
+    return {
+      score: finalScore,
+      tier,
+      passed,
+      confidence,
+      recommendation,
+      details,
+      bonuses,
+      penalties,
+      breakdown: {
+        trend: rsiScore + macdScore, // Approximate
+        total: finalScore,
+      },
+    };
+  }
+}
+
+// ==========================================
+// STRATEGY DETECTOR (Real setups, not forced)
+// Detects actual market patterns with quality ratings
+// ==========================================
+
+class StrategyDetector {
+  constructor() {
+    this.minQuality = 'B'; // Minimum quality to report
+    console.log('🎲 StrategyDetector initialized');
+  }
+
+  detect(analysis) {
+    const { trend, momentum, volume, levels, structure, sweep, fibonacci, price } = analysis;
+    
+    // Must have basic data
+    if (!price || !levels?.support || !levels?.resistance) return null;
+
+    // Check for each strategy type in order of priority
+    const strategies = [
+      this.detectLiquiditySweep.bind(this),
+      this.detectTrendContinuation.bind(this),
+      this.detectBreakout.bind(this),
+      this.detectPullback.bind(this),
+      this.detectRangePlay.bind(this),
+    ];
+
+    for (const detector of strategies) {
+      const setup = detector(analysis);
+      if (setup && this.qualityRank(setup.quality) >= this.qualityRank('B')) {
+        return setup;
+      }
+    }
+
+    return null;
+  }
+
+  qualityRank(q) {
+    const ranks = { 'A+': 5, 'A': 4, 'B+': 3, 'B': 2, 'C': 1 };
+    return ranks[q] || 0;
+  }
+
+  // ==========================================
+  // 1. LIQUIDITY SWEEP (Highest priority - clean entry)
+  // ==========================================
+  
+  detectLiquiditySweep(analysis) {
+    const { sweep, levels, trend, price, momentum } = analysis;
+    
+    if (!sweep?.bullish && !sweep?.bearish && !sweep?.weakBullish && !sweep?.weakBearish) {
+      return null;
+    }
+
+    const isBullish = sweep.bullish || sweep.weakBullish;
+    const isStrong = sweep.bullish || sweep.bearish; // Not weak
+    const direction = isBullish ? 'bullish' : 'bearish';
+    
+    // Verify: Sweep should align with momentum or trend
+    const rsiOk = momentum?.rsi?.value > 30 && momentum?.rsi?.value < 70;
+    const macdOk = momentum?.macd?.trend?.includes(direction === 'bullish' ? 'bull' : 'bear');
+    
+    if (!rsiOk && !macdOk) return null; // No confirmation
+
+    // Calculate levels
+    const stop = sweep.level * (direction === 'bullish' ? 0.985 : 1.015);
+    const target = direction === 'bullish' ? levels.resistance : levels.support;
+    const rr = Math.abs(target - price) / Math.abs(price - stop);
+
+    if (rr < 1.5) return null; // Poor R:R
+
+    return {
+      type: 'Liquidity Sweep',
+      direction,
+      quality: isStrong ? 'A' : 'B+',
+      entry: price,
+      stop,
+      target,
+      rr,
+      timeframe: '5M-15M',
+      note: isStrong ? 'Clean liquidity grab' : 'Weak sweep - manage tight',
+      invalidation: `Close beyond $${stop.toFixed(4)}`,
+      confidence: isStrong ? 'high' : 'medium',
+    };
+  }
+
+  // ==========================================
+  // 2. TREND CONTINUATION (Pullback to EMA)
+  // ==========================================
+  
+  detectTrendContinuation(analysis) {
+    const { trend, price, levels, momentum, fibonacci } = analysis;
+    
+    if (trend?.primary === 'neutral') return null;
+    if (trend?.strength < 40) return null; // Need decent trend
+
+    const direction = trend.primary;
+    
+    // Check for pullback to key level
+    const ema20 = trend.ema20;
+    const ema50 = trend.ema50;
+    
+    const nearEma20 = ema20 && Math.abs(price - ema20) / price < 0.015; // 1.5%
+    const nearEma50 = ema50 && Math.abs(price - ema50) / price < 0.025; // 2.5%
+    
+    // Or near Fibonacci retracement
+    let nearFib = false;
+    let fibLevel = null;
+    if (fibonacci) {
+      const fibLevels = [0.382, 0.5, 0.618];
+      for (const f of fibLevels) {
+        if (Math.abs(price - fibonacci[f]) / price < 0.012) {
+          nearFib = true;
+          fibLevel = f;
+          break;
+        }
+      }
+    }
+
+    if (!nearEma20 && !nearEma50 && !nearFib) return null;
+
+    // Momentum should be resetting (not overbought/oversold)
+    const rsi = momentum?.rsi?.value || 50;
+    const rsiResetting = direction === 'bullish' ? rsi < 60 : rsi > 40;
+    if (!rsiResetting) return null;
+
+    // Calculate levels
+    const stop = direction === 'bullish' 
+      ? (levels.support * 0.992 || price * 0.97)
+      : (levels.resistance * 1.008 || price * 1.03);
+    
+    const target = direction === 'bullish'
+      ? levels.resistance || price * 1.03
+      : levels.support || price * 0.97;
+    
+    const rr = Math.abs(target - price) / Math.abs(price - stop);
+
+    if (rr < 1.5) return null;
+
+    const quality = trend.alignment ? 'A' : 'B+';
+    
+    return {
+      type: 'Trend Continuation',
+      direction,
+      quality,
+      entry: price,
+      stop,
+      target,
+      rr,
+      timeframe: '15M-1H',
+      note: trend.alignment ? 'Aligned trend pullback' : 'Single TF trend - caution',
+      invalidation: `Break of ${direction === 'bullish' ? 'support' : 'resistance'}`,
+      confidence: trend.alignment ? 'high' : 'medium',
+      context: nearFib ? `Near ${fibLevel} Fib` : nearEma20 ? 'Near EMA20' : 'Near EMA50',
+    };
+  }
+
+  // ==========================================
+  // 3. BREAKOUT PLAY (Structure break + volume)
+  // ==========================================
+  
+  detectBreakout(analysis) {
+    const { structure, volume, levels, momentum, price } = analysis;
+    
+    if (structure?.bos === 'none') return null;
+    if (volume?.ratio < 1.3) return null; // Need volume confirmation
+    
+    // Determine direction from BOS
+    const direction = structure.bos.includes('bullish') ? 'bullish' : 'bearish';
+    
+    // Check momentum aligns
+    const macdAligns = momentum?.macd?.trend?.includes(direction === 'bullish' ? 'bull' : 'bear');
+    if (!macdAligns) return null;
+
+    // Entry: slight pullback to broken level or current price
+    const entry = price;
+    const stop = direction === 'bullish'
+      ? levels.pivot || levels.support || price * 0.985
+      : levels.pivot || levels.resistance || price * 1.015;
+    
+    const target = direction === 'bullish'
+      ? (levels.resistance * 1.02 || price * 1.04)
+      : (levels.support * 0.98 || price * 0.96);
+    
+    const rr = Math.abs(target - entry) / Math.abs(entry - stop);
+
+    if (rr < 1.5) return null;
+
+    const isClean = volume.ratio > 1.8 && structure.strength > 60;
+    
+    return {
+      type: 'Breakout Play',
+      direction,
+      quality: isClean ? 'A' : 'B+',
+      entry,
+      stop,
+      target,
+      rr,
+      timeframe: '5M-15M',
+      note: isClean ? 'Clean BOS with volume' : 'Moderate breakout',
+      invalidation: `Close back below ${direction === 'bullish' ? 'breakout' : 'breakdown'} level`,
+      confidence: isClean ? 'high' : 'medium',
+    };
+  }
+
+  // ==========================================
+  // 4. PULLBACK TO S/R (Range extremes)
+  // ==========================================
+  
+  detectPullback(analysis) {
+    const { levels, price, trend, momentum } = analysis;
+    
+    if (!levels.nearSupport && !levels.nearResistance) return null;
+    
+    // Determine direction based on which level we're at
+    const atSupport = levels.nearSupport;
+    const direction = atSupport ? 'bullish' : 'bearish';
+    
+    // Don't fight strong trend
+    if (trend?.primary !== 'neutral' && trend?.primary !== direction) {
+      if (trend?.strength > 60) return null; // Strong opposite trend
+    }
+
+    // RSI should support the bounce
+    const rsi = momentum?.rsi?.value || 50;
+    const rsiOk = atSupport ? rsi < 55 : rsi > 45;
+    if (!rsiOk) return null;
+
+    const stop = atSupport
+      ? levels.support * 0.99
+      : levels.resistance * 1.01;
+    
+    const target = atSupport
+      ? (levels.pivot || levels.resistance)
+      : (levels.pivot || levels.support);
+    
+    const rr = Math.abs(target - price) / Math.abs(price - stop);
+
+    if (rr < 1.5) return null;
+
+    return {
+      type: 'S/R Pullback',
+      direction,
+      quality: 'B+',
+      entry: price,
+      stop,
+      target,
+      rr,
+      timeframe: '15M-30M',
+      note: `Bounce from ${atSupport ? 'support' : 'resistance'}`,
+      invalidation: `Close beyond ${atSupport ? 'support' : 'resistance'}`,
+      confidence: 'medium',
+    };
+  }
+
+  // ==========================================
+  // 5. RANGE PLAY (Mean reversion - lowest priority)
+  // ==========================================
+  
+  detectRangePlay(analysis) {
+    const { structure, levels, price, volume } = analysis;
+    
+    if (!structure?.consolidation) return null;
+    if (!levels.range || levels.range / price < 0.015) return null; // Need 1.5% range
+    
+    // Only at extremes, not middle
+    const rangeMid = (levels.support + levels.resistance) / 2;
+    const nearMid = Math.abs(price - rangeMid) / price < 0.005;
+    if (nearMid) retur
