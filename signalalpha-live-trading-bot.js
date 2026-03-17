@@ -1651,6 +1651,7 @@ class StrategyDetector {
   // 5. RANGE PLAY (Mean reversion - lowest priority)
   // ==========================================
   
+  
   detectRangePlay(analysis) {
     const { structure, levels, price, volume } = analysis;
     
@@ -1660,4 +1661,626 @@ class StrategyDetector {
     // Only at extremes, not middle
     const rangeMid = (levels.support + levels.resistance) / 2;
     const nearMid = Math.abs(price - rangeMid) / price < 0.005;
-    if (nearMid) retur
+    if (nearMid) return null;
+
+    const atResistance = Math.abs(price - levels.resistance) / price < 0.008;
+    const atSupport = Math.abs(price - levels.support) / price < 0.008;
+    
+    if (!atResistance && !atSupport) return null;
+
+    const direction = atSupport ? 'bullish' : 'bearish';
+    
+    // Volume should be normal (not breakout)
+    if (volume?.trend === 'breakout') return null;
+
+    const stop = atSupport
+      ? levels.support * 0.992
+      : levels.resistance * 1.008;
+    
+    const target = rangeMid; // Target middle of range
+    
+    const rr = Math.abs(target - price) / Math.abs(price - stop);
+
+    if (rr < 1.2) return null; // Lower threshold for range plays
+
+    return {
+      type: 'Range Play',
+      direction,
+      quality: 'B',
+      entry: price,
+      stop,
+      target,
+      rr,
+      timeframe: '15M-1H',
+      note: 'Mean reversion in range',
+      invalidation: `Break ${atSupport ? 'below support' : 'above resistance'}`,
+      confidence: 'medium',
+      warning: 'Counter-trend - reduce size',
+    };
+  }
+}
+
+// ==========================================
+// END OF PART 3
+//
+// NEXT: Copy Part 4 below this section
+// Part 4 contains: Signal Generator & Telegram Bot
+// ==========================================
+// ==========================================
+// PART 4: SIGNAL GENERATOR & TELEGRAM BOT
+// signalalpha-part4.js
+// Continue from Part 3
+// ==========================================
+
+// ==========================================
+// REAL-TIME SIGNAL GENERATOR
+// Manages signal lifecycle, scanning, and monitoring
+// ==========================================
+
+class RealTimeSignalGenerator extends EventEmitter {
+  constructor(marketData, ta, confidence, strategy) {
+    super();
+    this.marketData = marketData;
+    this.ta = ta;
+    this.confidence = confidence;
+    this.strategy = strategy;
+    this.activeSignals = new Map();
+    this.tradeLogger = new TradeLogger();
+    this.isScanning = false;
+    this.scanStats = {
+      lastScan: null,
+      signalsToday: 0,
+      scansCompleted: 0,
+    };
+    console.log('🎯 RealTimeSignalGenerator initialized');
+  }
+
+  // ==========================================
+  // MULTI-TIMEFRAME ANALYSIS
+  // ==========================================
+  
+  async analyzeSymbol(symbol) {
+    console.log(`🔍 Analyzing ${symbol}...`);
+    
+    try {
+      // Fetch multi-timeframe data with staggered limits
+      const [m5, m15, h1, h4] = await Promise.all([
+        this.marketData.fetchOHLCV(symbol, '5m', 100),
+        this.marketData.fetchOHLCV(symbol, '15m', 100),
+        this.marketData.fetchOHLCV(symbol, '1h', 80),
+        this.marketData.fetchOHLCV(symbol, '4h', 50),
+      ]);
+
+      if (!m15 || !h1) {
+        console.log(`⚠️ Insufficient data for ${symbol}`);
+        return null;
+      }
+
+      const currentPrice = await this.marketData.getCurrentPrice(symbol);
+      if (!currentPrice) {
+        console.log(`⚠️ No price data for ${symbol}`);
+        return null;
+      }
+
+      // Volume check (relaxed)
+      const volume24h = await this.marketData.get24hVolume(symbol);
+      if (volume24h < CONFIG.TA.MIN_VOLUME_USD) {
+        console.log(`⚠️ Low volume for ${symbol}: $${volume24h.toLocaleString()}`);
+        return null;
+      }
+
+      // Run full analysis on each timeframe
+      const analysis5m = this.ta.runFullAnalysis(m5, '5m');
+      const analysis15m = this.ta.runFullAnalysis(m15, '15m');
+      const analysis1h = this.ta.runFullAnalysis(h1, '1h');
+      const analysis4h = h4 ? this.ta.runFullAnalysis(h4, '4h') : null;
+
+      // Multi-timeframe confluence
+      const multiTimeframe = {
+        primary: analysis15m.trend,
+        higherTF: analysis1h.trend,
+        alignment: analysis15m.trend.primary === analysis1h.trend.primary && 
+                   analysis15m.trend.primary !== 'neutral' &&
+                   analysis1h.trend.strength > 30,
+        fourHour: analysis4h?.trend || { primary: 'neutral' },
+      };
+
+      // Use 15m as primary, 1h for confirmation
+      const primary = analysis15m;
+      
+      // Detect strategy
+      const setup = this.strategy.detect({
+        ...primary,
+        multiTimeframe,
+        price: currentPrice,
+      });
+
+      if (!setup) {
+        console.log(`📊 No strategy match for ${symbol}`);
+        return null;
+      }
+
+      // Validate R:R meets minimum
+      if (setup.rr < CONFIG.RISK.MIN_RR) {
+        console.log(`⚠️ R:R too low for ${symbol}: ${setup.rr.toFixed(2)}:1`);
+        return null;
+      }
+
+      // Full analysis object for confidence scoring
+      const fullAnalysis = {
+        symbol,
+        price: currentPrice,
+        multiTimeframe,
+        momentum: primary.momentum,
+        volume: primary.volume,
+        levels: primary.levels,
+        structure: primary.structure,
+        sweep: primary.sweep,
+        setup,
+        atr: primary.atr,
+      };
+
+      // Calculate confidence
+      const confidence = this.confidence.calculate(fullAnalysis);
+      
+      console.log(`📊 ${symbol}: ${setup.type} ${setup.direction} | Score: ${confidence.score}% (${confidence.tier}) | R:R ${setup.rr.toFixed(2)}:1`);
+
+      return {
+        ...fullAnalysis,
+        confidence,
+        timestamp: Date.now(),
+      };
+
+    } catch (err) {
+      logger.error(`Analysis failed for ${symbol}:`, err.message);
+      console.error(`❌ Analysis error for ${symbol}:`, err.message);
+      return null;
+    }
+  }
+
+  // ==========================================
+  // SIGNAL BUILDER (Formats complete signal)
+  // ==========================================
+  
+  buildSignal(analysis) {
+    const { symbol, price, confidence, setup, multiTimeframe, momentum, volume, levels, atr } = analysis;
+    
+    // Dynamic position sizing based on confidence
+    const currentCapital = CONFIG.CHALLENGE.CURRENT_CAPITAL;
+    
+    // Risk: 2% base, up to 4% for high confidence
+    let riskPct = 2;
+    if (confidence.score >= 85) riskPct = 4;
+    else if (confidence.score >= 75) riskPct = 3;
+    else if (confidence.score >= 60) riskPct = 2;
+    else riskPct = 1; // Shouldn't happen due to filter
+
+    const riskAmount = currentCapital * (riskPct / 100);
+    const riskPrice = Math.abs(setup.entry - setup.stop);
+    const positionSize = riskPrice > 0 ? (riskAmount / riskPrice) * setup.entry : 0;
+
+    // Leverage: 5x-15x based on confidence and volatility
+    let leverage = 5;
+    if (confidence.score >= 80 && atr?.percent < 3) leverage = 15;
+    else if (confidence.score >= 70 && atr?.percent < 4) leverage = 10;
+    else if (confidence.score >= 60) leverage = 5;
+    
+    // Cap leverage by ATR (lower leverage for high volatility)
+    if (atr?.percent > 5) leverage = Math.min(leverage, 3);
+
+    const margin = positionSize / leverage;
+
+    // Challenge progress
+    const progress = ((currentCapital - CONFIG.CHALLENGE.START_CAPITAL) / 
+                     (CONFIG.CHALLENGE.TARGET - CONFIG.CHALLENGE.START_CAPITAL) * 100);
+
+    // Build execution steps
+    const steps = [
+      `Enter ${setup.timeframe} on ${setup.direction === 'bullish' ? 'green' : 'red'} candle close`,
+      `Stop: $${setup.stop.toFixed(4)} (${((Math.abs(setup.stop - setup.entry) / setup.entry) * 100).toFixed(2)}%)`,
+      `Target: $${setup.target.toFixed(4)} (R:R ${setup.rr.toFixed(2)}:1)`,
+    ];
+
+    // Add scale-out plan for good R:R
+    if (setup.rr >= 2) {
+      const scalePrice = setup.entry + (setup.target - setup.entry) * 0.5 * (setup.direction === 'bullish' ? 1 : -1);
+      steps.push(`Scale 50% at $${scalePrice.toFixed(4)} (1:1 R:R), move SL to breakeven`);
+    }
+
+    return {
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      validUntil: new Date(Date.now() + 4 * 3600000).toISOString(), // 4 hour validity
+      
+      symbol,
+      direction: setup.direction === 'bullish' ? 'LONG' : 'SHORT',
+      strategy: setup.type,
+      quality: setup.quality,
+      
+      confidence: {
+        score: confidence.score,
+        tier: confidence.tier,
+        level: confidence.confidence,
+        details: confidence.details,
+        bonuses: confidence.bonuses,
+        penalties: confidence.penalties,
+        recommendation: confidence.recommendation,
+      },
+
+      entry: {
+        price: setup.entry,
+        zone: {
+          min: setup.entry * 0.998,
+          max: setup.entry * 1.002,
+        },
+      },
+      
+      stopLoss: setup.stop,
+      takeProfit: setup.target,
+      riskReward: setup.rr.toFixed(2),
+      
+      position: {
+        riskPct,
+        riskAmount: riskAmount.toFixed(2),
+        leverage,
+        positionSize: positionSize.toFixed(4),
+        margin: margin.toFixed(2),
+        estProfit: (positionSize * (Math.abs(setup.target - setup.entry) / setup.entry)).toFixed(2),
+        estLoss: riskAmount.toFixed(2),
+      },
+
+      analysis: {
+        trend: multiTimeframe.primary.primary,
+        trendStrength: multiTimeframe.primary.strength,
+        trendAlignment: multiTimeframe.alignment,
+        rsi: momentum.rsi.value.toFixed(1),
+        rsiCondition: momentum.rsi.condition,
+        macdTrend: momentum.macd.trend,
+        macdCrossover: momentum.macd.crossover,
+        volumeRatio: volume.ratio.toFixed(2),
+        volumeTrend: volume.trend,
+        support: levels.support?.toFixed(4) || 'N/A',
+        resistance: levels.resistance?.toFixed(4) || 'N/A',
+        supportTouches: levels.supportTouches,
+        resistanceTouches: levels.resistanceTouches,
+        structure: setup.context || multiTimeframe.primary.primary,
+        atr: atr?.percent?.toFixed(2) + '%' || 'N/A',
+      },
+
+      execution: {
+        steps,
+        invalidation: setup.invalidation,
+        warning: setup.warning || null,
+        maxHold: setup.timeframe.includes('5M') ? '2-4 hours' : '4-8 hours',
+      },
+
+      challenge: {
+        startCapital: CONFIG.CHALLENGE.START_CAPITAL,
+        currentCapital: currentCapital.toFixed(2),
+        target: CONFIG.CHALLENGE.TARGET,
+        progress: Math.max(0, Math.min(100, progress)).toFixed(1),
+        daysLeft: CONFIG.CHALLENGE.DAYS,
+      },
+
+      meta: {
+        scannedAt: new Date().toISOString(),
+        dataQuality: 'multi-timeframe',
+        version: '2.0-balanced',
+      },
+    };
+  }
+
+  // ==========================================
+  // SIGNAL GENERATION (Main entry point)
+  // ==========================================
+  
+  async generateSignal(symbol, force = false) {
+    console.log(`🎯 Generating signal for ${symbol} (force=${force})...`);
+    
+    // Check daily limit
+    const todayCount = await this.tradeLogger.getTodaySignalCount();
+    if (!force && todayCount >= CONFIG.RISK.MAX_SIGNALS_PER_DAY) {
+      console.log(`⛅ Daily signal limit reached: ${todayCount}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`);
+      return null;
+    }
+
+    const analysis = await this.analyzeSymbol(symbol);
+    if (!analysis) {
+      return null;
+    }
+
+    // Confidence filter (60% minimum unless forced)
+    if (!force && !analysis.confidence.passed) {
+      console.log(`❌ Confidence too low: ${analysis.confidence.score}% - ${analysis.confidence.recommendation}`);
+      return null;
+    }
+
+    // Build complete signal
+    const signal = this.buildSignal(analysis);
+
+    // Log and emit
+    await this.tradeLogger.log('SIGNAL_GENERATED', {
+      symbol,
+      direction: signal.direction,
+      confidence: signal.confidence.score,
+      strategy: signal.strategy,
+      quality: signal.quality,
+      rr: signal.riskReward,
+    });
+
+    this.emit('signal', signal);
+    this.activeSignals.set(signal.id, signal);
+    this.scanStats.signalsToday = todayCount + 1;
+
+    console.log(`✅ SIGNAL CREATED: ${signal.id} | ${symbol} ${signal.direction} | ${signal.confidence.score}% ${signal.quality}`);
+
+    // Start monitoring
+    this.monitorSignal(signal.id);
+
+    return signal;
+  }
+
+  // ==========================================
+  // CONTINUOUS SCANNING
+  // ==========================================
+  
+  async startContinuousScanning() {
+    if (this.isScanning) {
+      console.log('⚠️ Scanning already active');
+      return;
+    }
+    
+    this.isScanning = true;
+    console.log('🚀 Starting continuous market scanning...');
+    this.emit('scanning_started');
+
+    const scanLoop = async () => {
+      while (this.isScanning) {
+        try {
+          // Check daily limit
+          const todayCount = await this.tradeLogger.getTodaySignalCount();
+          if (todayCount >= CONFIG.RISK.MAX_SIGNALS_PER_DAY) {
+            console.log(`⛅ Daily limit reached (${todayCount}), pausing scans...`);
+            await new Promise(r => setTimeout(r, 300000)); // 5 min wait
+            continue;
+          }
+
+          console.log(`\n🔄 Scan Cycle #${++this.scanStats.scansCompleted} | Signals today: ${todayCount}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`);
+          
+          // Get top volume pairs (rotating selection)
+          const symbols = await this.marketData.getTopVolumeSymbols(20);
+          
+          // Shuffle for variety
+          const shuffled = symbols.sort(() => 0.5 - Math.random());
+          
+          let signalsFound = 0;
+          for (const symbol of shuffled) {
+            if (!this.isScanning) break;
+            
+            // Skip if active signal exists for this symbol
+            const hasActive = Array.from(this.activeSignals.values())
+              .some(s => s.symbol === symbol && Date.now() - new Date(s.timestamp).getTime() < 7200000);
+            
+            if (hasActive) {
+              console.log(`⏭️ Skipping ${symbol} - active signal`);
+              continue;
+            }
+
+            const signal = await this.generateSignal(symbol);
+            if (signal) {
+              signalsFound++;
+              // Wait between signals
+              await new Promise(r => setTimeout(r, 3000));
+              
+              // Break if daily limit hit after this signal
+              if (await this.tradeLogger.getTodaySignalCount() >= CONFIG.RISK.MAX_SIGNALS_PER_DAY) {
+                break;
+              }
+            } else {
+              // Small delay between scans
+              await new Promise(r => setTimeout(r, 500));
+            }
+          }
+          
+          this.scanStats.lastScan = new Date();
+          console.log(`✅ Scan complete. Found: ${signalsFound} signals`);
+          
+          // Wait before next cycle (30-60s random to avoid patterns)
+          const waitTime = 30000 + Math.random() * 30000;
+          await new Promise(r => setTimeout(r, waitTime));
+          
+        } catch (err) {
+          logger.error('Scan loop error:', err.message);
+          console.error('❌ Scan loop error:', err.message);
+          await new Promise(r => setTimeout(r, 60000));
+        }
+      }
+    };
+
+    scanLoop();
+  }
+
+  stopScanning() {
+    console.log('⏹️ Stopping market scanning...');
+    this.isScanning = false;
+    this.emit('scanning_stopped');
+  }
+
+  // ==========================================
+  // SIGNAL MONITORING (Live tracking)
+  // ==========================================
+  
+  async monitorSignal(signalId) {
+    const signal = this.activeSignals.get(signalId);
+    if (!signal) return;
+
+    console.log(`👁️  Monitoring ${signal.symbol} ${signal.direction} | Entry: $${signal.entry.price.toFixed(4)} | SL: $${signal.stopLoss.toFixed(4)} | TP: $${signal.takeProfit.toFixed(4)}`);
+
+    let checkCount = 0;
+    const checkInterval = setInterval(async () => {
+      try {
+        checkCount++;
+        const currentPrice = await this.marketData.getCurrentPrice(signal.symbol);
+        if (!currentPrice) return;
+
+        // Progress tracking (every 10 checks = ~50s)
+        if (checkCount % 10 === 0) {
+          const pnlPct = signal.direction === 'LONG' 
+            ? ((currentPrice - signal.entry.price) / signal.entry.price) * 100
+            : ((signal.entry.price - currentPrice) / signal.entry.price) * 100;
+          console.log(`📊 ${signal.symbol} | Check #${checkCount} | Price: $${currentPrice.toFixed(4)} | P&L: ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
+        }
+
+        // Check stop loss
+        if (signal.direction === 'LONG' && currentPrice <= signal.stopLoss) {
+          this.closeSignal(signalId, 'stop_loss', currentPrice, checkInterval);
+        }
+        // Check take profit
+        else if (signal.direction === 'LONG' && currentPrice >= signal.takeProfit) {
+          this.closeSignal(signalId, 'take_profit', currentPrice, checkInterval);
+        }
+        // Short variants
+        else if (signal.direction === 'SHORT' && currentPrice >= signal.stopLoss) {
+          this.closeSignal(signalId, 'stop_loss', currentPrice, checkInterval);
+        }
+        else if (signal.direction === 'SHORT' && currentPrice <= signal.takeProfit) {
+          this.closeSignal(signalId, 'take_profit', currentPrice, checkInterval);
+        }
+        
+      } catch (err) {
+        logger.error(`Monitor error for ${signal.symbol}:`, err.message);
+      }
+    }, 5000);
+
+    // Auto-expire after 4 hours
+    setTimeout(() => {
+      if (this.activeSignals.has(signalId)) {
+        console.log(`⏰ Signal ${signalId} expired (4h timeout)`);
+        clearInterval(checkInterval);
+        this.activeSignals.delete(signalId);
+        this.tradeLogger.log('SIGNAL_EXPIRED', { signalId, symbol: signal.symbol });
+      }
+    }, 4 * 3600000);
+  }
+
+  async closeSignal(signalId, result, exitPrice, interval) {
+    clearInterval(interval);
+    const signal = this.activeSignals.get(signalId);
+    if (!signal) return;
+
+    const pnl = result === 'take_profit' 
+      ? parseFloat(signal.position.estProfit)
+      : -parseFloat(signal.position.estLoss);
+    
+    const pnlPct = (pnl / CONFIG.CHALLENGE.CURRENT_CAPITAL) * 100;
+
+    console.log(`🏁 SIGNAL CLOSED: ${signal.symbol} ${result.toUpperCase()} @ $${exitPrice.toFixed(4)} | P&L: $${pnl.toFixed(2)} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`);
+
+    this.emit('signal_closed', { signal, result, exitPrice, pnl, pnlPct });
+    this.activeSignals.delete(signalId);
+
+    await this.tradeLogger.log('SIGNAL_CLOSED', {
+      signalId,
+      symbol: signal.symbol,
+      result,
+      exitPrice,
+      pnl,
+      pnlPct,
+      duration: Date.now() - new Date(signal.timestamp).getTime(),
+    });
+
+    // Update challenge capital (simulated)
+    CONFIG.CHALLENGE.CURRENT_CAPITAL += pnl;
+  }
+
+  getActiveSignals() {
+    return Array.from(this.activeSignals.values());
+  }
+
+  getStats() {
+    return {
+      ...this.scanStats,
+      activeSignals: this.activeSignals.size,
+      isScanning: this.isScanning,
+    };
+  }
+}
+
+// ==========================================
+// TELEGRAM BOT INTERFACE
+// ==========================================
+
+class SignalAlphaTelegramBot {
+  constructor() {
+    console.log('🤖 Initializing SignalAlphaTelegramBot...');
+    
+    if (!CONFIG.BOT_TOKEN) {
+      throw new Error('BOT_TOKEN is required in .env file');
+    }
+
+    this.bot = new Telegraf(CONFIG.BOT_TOKEN);
+    this.marketData = new MarketDataEngine();
+    this.ta = new InstitutionalTA(this.marketData);
+    this.confidence = new ConfidenceEngine();
+    this.strategy = new StrategyDetector();
+    this.generator = new RealTimeSignalGenerator(this.marketData, this.ta, this.confidence, this.strategy);
+    this.tradeLogger = new TradeLogger();
+
+    this.userSettings = new Map();
+    this.setupBot();
+
+    console.log('✅ SignalAlphaTelegramBot constructed');
+  }
+
+  setupBot() {
+    console.log('⚙️ Setting up bot handlers...');
+
+    // Admin middleware
+    this.bot.use(async (ctx, next) => {
+      ctx.isAdmin = CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
+      await next();
+    });
+
+    this.setupCommands();
+    this.setupActions();
+    this.setupCallbacks();
+
+    // Event listeners
+    this.generator.on('signal', (signal) => this.handleNewSignal(signal));
+    this.generator.on('signal_closed', (data) => this.handleSignalClose(data));
+    this.generator.on('scanning_started', () => this.broadcastToAdmins('🔥 Live scanning activated'));
+    this.generator.on('scanning_stopped', () => this.broadcastToAdmins('⏹️ Scanning stopped'));
+
+    console.log('✅ Bot handlers configured');
+  }
+
+  setupCommands() {
+    // /start - Welcome
+    this.bot.command('start', async (ctx) => {
+      console.log(`👤 User started: ${ctx.from.id}`);
+      
+      const welcome = [
+        '🎯 *SignalAlpha v2.0 - Balanced Signals*',
+        '',
+        'Real-time crypto analysis with calibrated thresholds.',
+        'No fake signals. No missed opportunities.',
+        '',
+        '*Key Features:*',
+        '• 60%+ confidence threshold (balanced)',
+        '• 1.5:1 minimum R:R (realistic)',
+        '• Multi-timeframe confluence',
+        '• Live market monitoring',
+        '',
+        '📊 /dashboard - View challenge progress',
+        '🎯 /signal - Get manual signal scan',
+        '🔥 /live - Start auto-scanning (admin)',
+        '',
+        `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \\`${CONFIG.REFERRAL.CODE}\\``
+      ].join('\n');
+
+      await ctx.reply(welcome, {
+        parse_mode: 'MarkdownV2',
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
+          [Markup.button.callback('📈 Stats', 'STATS'), Markup.button.callback('⚙️ Settings', 'SE
