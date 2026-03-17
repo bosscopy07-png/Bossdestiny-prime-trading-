@@ -413,12 +413,8 @@ console.log(`✅ Top volumes: ${sorted.slice(0, 5).join(', ')}...`);
  
  }
 
-try {
-  fs.readFileSync('trades.log');
-} catch {
-  fs.writeFileSync('trades.log', '[]');
-}
-    
+
+
 // ==========================================
 // END OF PART 1
 // 
@@ -437,6 +433,7 @@ class InstitutionalTA {
     console.log('📐 InstitutionalTA initialized');
   }
 
+  
   // ==========================================
   // TREND ANALYSIS (Balanced - not too strict)
   // ==========================================
