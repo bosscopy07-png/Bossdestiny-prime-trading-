@@ -1208,6 +1208,26 @@ class InstitutionalTA {
 // ADD TO PART 1 - TradeLogger constructor
 // ==========================================
 
+// ==========================================
+// REPLACE get24hVolume in Part 1
+// ==========================================
+
+async get24hVolume(symbol) {
+  if (!symbol) return 0;
+  
+  const normalized = this.normalizeSymbol(symbol) || symbol;
+  
+  if (!this.isValidSymbol(normalized)) {
+    return 0;
+  }
+  
+  try {
+    const ticker = await this.exchange.fetchTicker(normalized);
+    return ticker?.quoteVolume || 0;
+  } catch (err) {
+    return 0;
+  }
+    }
 
 
 // ==========================================
