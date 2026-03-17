@@ -145,13 +145,9 @@ class TradeLogger {
     }
   }
 
+  
   // Optional: get number of trades/events logged today
-  getDailyCount(date = new Date()) {
-    const dayKey = date.toISOString().split('T')[0];
-    return this.dailyStats.get(dayKey) || 0;
-  }
-}
-
+  
   async getRecentTrades(hours = 24) {
     console.log(`📖 Reading recent trades from last ${hours}h...`);
     try {
