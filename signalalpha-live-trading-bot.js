@@ -182,119 +182,123 @@ class TradeLogger {
 // ==========================================
 // IMPROVED MARKET DATA ENGINE
 // ==========================================
-
 class MarketDataEngine extends EventEmitter {
   constructor() {
     super();
 
     console.log('🏗️ Initializing MarketDataEngine...');
 
-// Initialize CCXT exchange with aggressive rate limiting
-try {
-  // Try Binance first (more reliable for OHLCV)
-  this.exchange = new ccxt.binance({
-    enableRateLimit: true,
-    rateLimit: 100, // 100ms between requests
-    options: {
-      defaultType: 'future', // USDT-M futures
-      adjustForTimeDifference: true,
-    },
-  });
-  
-  if (CONFIG.EXCHANGE.SANDBOX) {
-    this.exchange.setSandboxMode(true);
-  }
-  
-  console.log(`✅ Exchange initialized: binance (USDT-M Futures)`);
-  
-} catch (err) {
-  console.error('❌ Failed to initialize binance:', err.message);
-  
-  // Fallback to BingX
-  try {
-    this.exchange = new ccxt.bingx({
-      enableRateLimit: true,
-      rateLimit: 200,
-      options: {
-        defaultType: 'swap',
-      },
-    });
-    
-    console.log('⚠️ Fallback to bingx exchange');
-  } catch (err2) {
-    throw new Error('No exchange available');
-  }
-}
+    // Initialize CCXT exchange with aggressive rate limiting
+    try {
+      // Try Binance first (more reliable for OHLCV)
+      this.exchange = new ccxt.binance({
+        enableRateLimit: true,
+        rateLimit: 100,
+        options: {
+          defaultType: 'future',
+          adjustForTimeDifference: true,
+        },
+      });
 
-    
-  // ==========================================
-// REPLACE initialize METHOD IN PART 1
-// ==========================================
+      if (CONFIG.EXCHANGE.SANDBOX) {
+        this.exchange.setSandboxMode(true);
+      }
 
-async initialize() {
-  console.log('🚀 Starting MarketDataEngine initialization...');
-  
-  try {
-    // Load markets with retry
-    let retries = 3;
-    while (retries > 0) {
+      console.log(`✅ Exchange initialized: binance (USDT-M Futures)`);
+
+    } catch (err) {
+      console.error('❌ Failed to initialize binance:', err.message);
+
+      // Fallback to BingX
       try {
-        console.log('📡 Loading markets from exchange...');
-        await this.exchange.loadMarkets();
-        break;
-      } catch (err) {
-        retries--;
-        if (retries === 0) throw err;
-        console.log(`⚠️ Market load failed, retrying... (${retries} left)`);
-        await new Promise(r => setTimeout(r, 2000));
+        this.exchange = new ccxt.bingx({
+          enableRateLimit: true,
+          rateLimit: 200,
+          options: {
+            defaultType: 'swap',
+          },
+        });
+
+        console.log('⚠️ Fallback to bingx exchange');
+      } catch (err2) {
+        throw new Error('No exchange available');
       }
     }
-    
-    const marketCount = Object.keys(this.exchange.markets).length;
-    logger.info(`Loaded ${marketCount} markets`);
-    console.log(`✅ Loaded ${marketCount} markets`);
 
-    // Filter active USDT perpetual futures
-    console.log('🔍 Filtering perpetual markets...');
-    this.perpetualMarkets = Object.values(this.exchange.markets)
-      .filter(m => {
-        // Binance futures format: BTC/USDT
-        // Must be active, USDT quoted, and a future/swap
-        const isActive = m.active !== false;
-        const isUSDT = m.quote === 'USDT' || m.quoteId === 'USDT';
-        const isFuture = m.type === 'future' || m.type === 'swap';
-        const isPerp = m.linear === true || m.contract === true;
-        
-        return isActive && isUSDT && (isFuture || isPerp);
+    // Test connection
+    this.exchange.fetchTime()
+      .then(() => {
+        console.log('✅ Exchange connection verified');
       })
-      .map(m => m.symbol)
-      .sort();
-    
-    logger.info(`Found ${this.perpetualMarkets.length} active perpetual markets`);
-    console.log(`✅ Found ${this.perpetualMarkets.length} perpetual markets`);
-    console.log(`📊 Top markets: ${this.perpetualMarkets.slice(0, 10).join(', ')}...`);
+      .catch(err => {
+        console.error('⚠️ Exchange connection test failed:', err.message);
+      });
 
-    if (this.perpetualMarkets.length === 0) {
-      throw new Error('No perpetual markets found - check exchange configuration');
+  } // ✅ THIS WAS MISSING
+
+  // ==========================================
+  // REPLACE initialize METHOD IN PART 1
+  // ==========================================
+
+  async initialize() {
+    console.log('🚀 Starting MarketDataEngine initialization...');
+
+    try {
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          console.log('📡 Loading markets from exchange...');
+          await this.exchange.loadMarkets();
+          break;
+        } catch (err) {
+          retries--;
+          if (retries === 0) throw err;
+          console.log(`⚠️ Market load failed, retrying... (${retries} left)`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+
+      const marketCount = Object.keys(this.exchange.markets).length;
+      logger.info(`Loaded ${marketCount} markets`);
+      console.log(`✅ Loaded ${marketCount} markets`);
+
+      console.log('🔍 Filtering perpetual markets...');
+      this.perpetualMarkets = Object.values(this.exchange.markets)
+        .filter(m => {
+          const isActive = m.active !== false;
+          const isUSDT = m.quote === 'USDT' || m.quoteId === 'USDT';
+          const isFuture = m.type === 'future' || m.type === 'swap';
+          const isPerp = m.linear === true || m.contract === true;
+
+          return isActive && isUSDT && (isFuture || isPerp);
+        })
+        .map(m => m.symbol)
+        .sort();
+
+      logger.info(`Found ${this.perpetualMarkets.length} active perpetual markets`);
+      console.log(`✅ Found ${this.perpetualMarkets.length} perpetual markets`);
+      console.log(`📊 Top markets: ${this.perpetualMarkets.slice(0, 10).join(', ')}...`);
+
+      if (this.perpetualMarkets.length === 0) {
+        throw new Error('No perpetual markets found - check exchange configuration');
+      }
+
+      console.log('🔌 Starting WebSocket feeds...');
+      this.startWebSocketFeeds();
+
+      console.log('📈 Starting OHLCV polling...');
+      setTimeout(() => this.startOhlcvPolling(), 5000);
+
+      this.isRunning = true;
+      console.log('🎯 MarketDataEngine fully initialized and running');
+
+    } catch (err) {
+      logger.error('Failed to initialize market data:', err);
+      console.error('❌ MarketDataEngine initialization failed:', err.message);
+      throw err;
     }
-
-    // Start WebSocket feeds
-    console.log('🔌 Starting WebSocket feeds...');
-    this.startWebSocketFeeds();
-    
-    // Start polling for OHLCV (delayed)
-    console.log('📈 Starting OHLCV polling...');
-    setTimeout(() => this.startOhlcvPolling(), 5000);
-    
-    this.isRunning = true;
-    console.log('🎯 MarketDataEngine fully initialized and running');
-    
-  } catch (err) {
-    logger.error('Failed to initialize market data:', err);
-    console.error('❌ MarketDataEngine initialization failed:', err.message);
-    throw err;
   }
-}
+                        }
 
   // ==========================================
 // REPLACE get24hVolume in Part 1
