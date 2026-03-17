@@ -695,7 +695,7 @@ class InstitutionalTA {
     if (ohlcv.length < 20) return { ratio: 1, trend: 'normal', confirmation: false };
 
     const volumes = ohlcv.map(c => c[5]);
-    const closes = ohllcv.map(c => c[4]);
+    const closes = ohlcv.map(c => c[4]);
     
     // Current vs 20-period average
     const avgVolume = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
