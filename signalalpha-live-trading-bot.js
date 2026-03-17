@@ -1100,17 +1100,7 @@ class InstitutionalTA {
 // ADD TO PART 1 - TradeLogger constructor
 // ==========================================
 
-constructor(filename = 'trades.log') {
-  this.filename = filename;
-  this.dailyStats = new Map();
-  
-  // Ensure file exists
-  fs.access(filename).catch(() => {
-    fs.writeFile(filename, '').catch(() => {});
-  });
-  
-  console.log(`📁 TradeLogger initialized: ${filename}`);
-}
+
 
 // ==========================================
 // END OF PART 2
