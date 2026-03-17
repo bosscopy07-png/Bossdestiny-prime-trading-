@@ -2285,8 +2285,7 @@ class SignalAlphaTelegramBot {
           [Markup.button.callback('📈 Stats', 'STATS'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
         ])
       });
-    });
-
+    
     // /dashboard - Challenge progress
     this.bot.command('dashboard', async (ctx) => {
       await this.sendDashboard(ctx.chat.id, ctx.isAdmin);
