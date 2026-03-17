@@ -2275,7 +2275,7 @@ class SignalAlphaTelegramBot {
         '🎯 /signal - Get manual signal scan',
         '🔥 /live - Start auto-scanning (admin)',
         '',
-        `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``;
+        `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``,
         
       await ctx.reply(welcome, {
         parse_mode: 'MarkdownV2',
