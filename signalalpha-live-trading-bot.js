@@ -1829,9 +1829,140 @@ class SignalAlphaTelegramBot {
       '',
       '📈 *TECHNICAL RATIONALE*',
       `• Trend: ${signal.analysis.trend} (Aligned: ${signal.analysis.trendAlignment ? 'Yes' : 'No'})`,
-      `• Momentum: RSI ${signal.analysis.rsi}, MACD ${signal.analysis.macdDirection}`,
+            `• Momentum: RSI ${signal.analysis.rsi}, MACD ${signal.analysis.macdDirection}`,
       `• Volume: ${signal.analysis.volumeRatio}x average (${signal.analysis.volumeTrend})`,
       `• Support: $${signal.analysis.support} (${signal.analysis.supportTouches} touches)`,
       `• Resistance: $${signal.analysis.resistance} (${signal.analysis.resistanceTouches} touches)`,
       '',
       '🎯 *EXECUTION PLAN*',
+      `1. ${signal.execution.step1}`,
+      `2. ${signal.execution.step2}`,
+      `3. ${signal.execution.step3}`,
+      '',
+      '📊 *CHALLENGE TRACKER*',
+      `Start: $${signal.challenge.startCapital}`,
+      `Current: $${signal.challenge.currentCapital} (${((current - startCapital) / startCapital * 100).toFixed(1)}%)`,
+      `Target: $${signal.challenge.target}`,
+      `Progress: ${signal.challenge.progress}% ${'█'.repeat(Math.round(signal.challenge.progress / 10))}${'░'.repeat(10 - Math.round(signal.challenge.progress / 10))}`,
+      `Days Left: ${signal.challenge.daysLeft}`,
+      '',
+      '═══════════════════════════════════════════════════════════════',
+      `🔗 EXECUTE ON BINGX: ${CONFIG.REFERRAL.LINK}`,
+      `🎁 REFERRAL CODE: ${CONFIG.REFERRAL.CODE}`,
+      '═══════════════════════════════════════════════════════════════',
+      '',
+      '⚡ *Disclaimer:* Educational analysis only. Crypto trading carries substantial risk.'
+    ].join('\n');
+
+    try {
+      await this.bot.telegram.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('✅ Signal Taken', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skipped', `SKIPPED_${signal.id}`)],
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+        ])
+      });
+      console.success(`Signal sent successfully to ${chatId}`);
+    } catch (err) {
+      console.error(`Failed to send signal to ${chatId}:`, err.message);
+    }
+
+    // Start monitoring this signal
+    this.generator.monitorSignal(signal.id);
+  }
+
+  async broadcastSignal(signal) {
+    console.info(`Broadcasting signal ${signal.id} to admins`);
+    // Send to all admin users
+    for (const adminId of CONFIG.ADMIN_IDS) {
+      try {
+        await this.sendSignal(adminId, signal);
+      } catch (err) {
+        console.error(`Failed to send to admin ${adminId}:`, err.message);
+      }
+    }
+  }
+
+  async handleSignalClose(data) {
+    const { signal, result, price } = data;
+    console.trade(`Signal closed: ${signal.symbol} ${result} @ $${price}`);
+    
+    await this.tradeLogger.log('SIGNAL_CLOSED', {
+      signalId: signal.id,
+      symbol: signal.symbol,
+      result,
+      exitPrice: price,
+      pnl: result === 'take_profit' ? signal.position.estProfit : -signal.position.estLoss,
+    });
+  }
+
+  async start() {
+    console.section('STARTUP SEQUENCE');
+    
+    // Initialize market data
+    console.info('Initializing market data engine...');
+    await this.marketData.initialize();
+    
+    // Launch bot
+    console.info('Launching Telegram bot...');
+    await this.bot.launch();
+    console.success('SignalAlpha Bot is LIVE!');
+    console.showStats();
+    
+    // Auto-start if enabled
+    if (process.env.AUTO_START_SCAN === 'true') {
+      console.info('Auto-starting continuous scanning...');
+      this.generator.startContinuousScanning();
+    }
+    
+    // Graceful shutdown
+    process.once('SIGINT', () => {
+      console.warn('SIGINT received, shutting down gracefully...');
+      this.generator.stopScanning();
+      this.bot.stop('SIGINT');
+      console.showStats();
+    });
+    process.once('SIGTERM', () => {
+      console.warn('SIGTERM received, shutting down gracefully...');
+      this.generator.stopScanning();
+      this.bot.stop('SIGTERM');
+      console.showStats();
+    });
+    
+    // Periodic stats display
+    setInterval(() => {
+      if (this.generator.isScanning) console.showStats();
+    }, 60000); // Every minute
+  }
+}
+
+// ==========================================
+// MAIN ENTRY
+// ==========================================
+
+async function main() {
+  console.clear();
+  console.section('SIGNALALPHA TRADING BOT v2.0');
+  console.info('Enhanced Console & Real-time Monitoring');
+  console.info(`Exchange: ${CONFIG.EXCHANGE.ID} | Min Confidence: ${CONFIG.RISK.MIN_CONFIDENCE}% | Min R:R: ${CONFIG.RISK.MIN_RR}`);
+  
+  if (!CONFIG.BOT_TOKEN) {
+    console.error('BOT_TOKEN required in .env');
+    process.exit(1);
+  }
+
+  try {
+    const bot = new SignalAlphaTelegramBot();
+    await bot.start();
+  } catch (err) {
+    console.error('Fatal error:', err.message);
+    process.exit(1);
+  }
+}
+
+main().catch(err => {
+  console.error('Unhandled error:', err.message);
+  process.exit(1);
+});
+      
