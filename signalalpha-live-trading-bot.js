@@ -2275,8 +2275,9 @@ class SignalAlphaTelegramBot {
         '🎯 /signal - Get manual signal scan',
         '🔥 /live - Start auto-scanning (admin)',
         '',
-        `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``,
-        
+         `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``
+  ].join('\n'); // ✅
+      
       await ctx.reply(welcome, {
         parse_mode: 'MarkdownV2',
         disable_web_page_preview: true,
@@ -2285,6 +2286,24 @@ class SignalAlphaTelegramBot {
           [Markup.button.callback('📈 Stats', 'STATS'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
         ])
       });
+    
+  
+
+  await ctx.reply(welcome, {
+    parse_mode: 'Markdown',
+    disable_web_page_preview: true,
+    ...Markup.inlineKeyboard([
+      [
+        Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
+        Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')
+      ],
+      [
+        Markup.button.callback('📈 Stats', 'STATS'),
+        Markup.button.callback('⚙️ Settings', 'SETTINGS')
+      ]
+    ])
+  });
+});
     
     // /dashboard - Challenge progress
     this.bot.command('dashboard', async (ctx) => {
@@ -2516,7 +2535,8 @@ class SignalAlphaTelegramBot {
       `Max Consecutive Losses: ${CONFIG.RISK.MAX_CONSECUTIVE_LOSSES}`,
       `Active Signals: ${stats.activeSignals}`,
       '',
-      `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``
+       `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``
+  ].join('\n'); // ✅
 
     const buttons = isAdmin ? [
       [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('🔥 Start Live', 'START_LIVE')],
