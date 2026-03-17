@@ -1147,7 +1147,6 @@ class StrategyDetector {
 // ==========================================
 // ENHANCED REAL-TIME SIGNAL GENERATOR
 // ==========================================
-
 class RealTimeSignalGenerator extends EventEmitter { constructor(marketData, ta, confidence, strategy) { super(); this.marketData = marketData; this.ta = ta; this.confidence = confidence; this.strategy = strategy; this.activeSignals = new Map(); this.tradeLogger = new TradeLogger(); this.isScanning = false; this.scanStats = { scanned: 0, signals: 0, errors: 0 };
 console.success('RealTimeSignalGenerator initialized');
 }
@@ -1492,3 +1491,4 @@ setTimeout(() => {
   this.activeSignals.delete(signalId);
 }, 4 * 3600000);
 } }
+                
