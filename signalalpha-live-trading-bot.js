@@ -166,29 +166,43 @@ class MarketDataEngine extends EventEmitter {
 
     console.log('🏗️ Initializing MarketDataEngine...');
 
-    try {
-      this.exchange = new ccxt[CONFIG.EXCHANGE.ID]({
-        enableRateLimit: true,
-        options: {
-          defaultType: CONFIG.EXCHANGE.DEFAULT_TYPE || 'future',
-        },
-      });
-
-      if (CONFIG.EXCHANGE.SANDBOX) {
-        this.exchange.setSandboxMode(true);
-        console.log('🔒 Sandbox mode enabled');
-      }
-
-      console.log(`✅ Exchange initialized: ${CONFIG.EXCHANGE.ID}`);
-    } catch (err) {
-      console.error('❌ Exchange init failed, fallback to binance');
-
-      this.exchange = new ccxt.binance({
-        enableRateLimit: true,
-        options: { defaultType: 'future' },
-      });
+try {
+  // Try BingX first
+  this.exchange = new ccxt.bingx({
+    enableRateLimit: true,
+    options: {
+      defaultType: 'swap',
+    },
+  });
+  
+  if (CONFIG.EXCHANGE.SANDBOX) {
+    this.exchange.setSandboxMode(true);
+  }
+  
+  console.log(`✅ Exchange initialized: bingx`);
+} catch (err) {
+  console.error('❌ Failed to initialize bingx:', err.message);
+  
+  // Fallback to Binance
+  try {
+    this.exchange = new ccxt.binance({
+      enableRateLimit: true,
+      options: {
+        defaultType: 'future',
+      },
+    });
+    
+    if (CONFIG.EXCHANGE.SANDBOX) {
+      this.exchange.setSandboxMode(true);
     }
-
+    
+    console.log('⚠️ Fallback to binance exchange');
+  } catch (err2) {
+    console.error('❌ Failed to initialize fallback:', err2.message);
+    throw new Error('No exchange available');
+  }
+}
+    
     this.priceCache = new Map();
     this.ohlcvCache = new Map();
     this.wsConnections = new Map();
@@ -2390,41 +2404,48 @@ class SignalAlphaTelegramBot {
     });
 
     // /signal - Manual scan
-    this.bot.command('signal', async (ctx) => {
-      await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'Markdown' });
-      
-      const symbols = await this.marketData.getTopVolumeSymbols(10);
-      let found = false;
-      
-      for (const symbol of symbols) {
-        const signal = await this.generator.generateSignal(symbol);
-        if (signal) {
-          await this.sendSignal(ctx.chat.id, signal);
-          found = true;
-          break;
-        }
-        await new Promise(r => setTimeout(r, 1000));
-      }
-      
-      if (!found) {
-        await ctx.reply([
-          '❌ *No qualified setups found*',
-          '',
-          'Markets are consolidating or signals don\\\'t meet quality thresholds.',
-          '',
-          'Try again in 15-30 minutes, or enable auto-alerts.',
-          '',
-          'Quality > Quantity. Patience pays.'
-        ].join('\n'), {
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('🔔 Auto-Alerts', 'ENABLE_ALERTS')],
-            [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
-          ])
-        });
-      }
-    });
+    // ==========================================
+// REPLACE /signal command in Part 4
+// ==========================================
 
+this.bot.command('signal', async (ctx) => {
+  await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'Markdown' });
+  
+  // Get actual symbols from exchange instead of hardcoded
+  const symbols = await this.marketData.getTopVolumeSymbols(15);
+  let found = false;
+  
+  for (const symbol of symbols) {
+    const signal = await this.generator.generateSignal(symbol);
+    if (signal) {
+      await this.sendSignal(ctx.chat.id, signal);
+      found = true;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  
+  if (!found) {
+    await ctx.reply([
+      '❌ *No qualified setups found*',
+      '',
+      'Markets are consolidating or signals don\'t meet quality thresholds.',
+      '',
+      'Try again in 15-30 minutes, or enable auto-alerts.',
+      '',
+      'Quality > Quantity. Patience pays.'
+    ].join('\n'), {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔔 Auto-Alerts', 'ENABLE_ALERTS')],
+        [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+      ])
+    });
+  }
+});
+
+
+  
     // /live - Start scanning (admin only)
     this.bot.command('live', async (ctx) => {
       if (!ctx.isAdmin) {
@@ -2484,23 +2505,25 @@ class SignalAlphaTelegramBot {
     });
 
     // Get Signal
-    this.bot.action('GET_SIGNAL', async (ctx) => {
-      await ctx.answerCbQuery('Scanning...');
-      await ctx.reply('🔍 Scanning top pairs for A-B+ setups...');
-      
-      const majors = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT'];
-      
-      for (const symbol of majors) {
-        const signal = await this.generator.generateSignal(symbol);
-        if (signal) {
-          await this.sendSignal(ctx.chat.id, signal);
-          return;
-        }
-        await new Promise(r => setTimeout(r, 1500));
-      }
-      
-      await ctx.reply('❌ No qualified setups found in majors. Try /signal for broader scan.');
-    });
+    // Also fix GET_SIGNAL action
+this.bot.action('GET_SIGNAL', async (ctx) => {
+  await ctx.answerCbQuery('Scanning...');
+  await ctx.reply('🔍 Scanning top pairs for A-B+ setups...');
+  
+  // Use actual exchange symbols
+  const symbols = await this.marketData.getTopVolumeSymbols(10);
+  
+  for (const symbol of symbols.slice(0, 5)) {
+    const signal = await this.generator.generateSignal(symbol);
+    if (signal) {
+      await this.sendSignal(ctx.chat.id, signal);
+      return;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  
+  await ctx.reply('❌ No qualified setups found. Try /signal for broader scan.');
+});
 
     // Stats
     this.bot.action('STATS', async (ctx) => {
