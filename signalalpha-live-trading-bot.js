@@ -2518,8 +2518,7 @@ class SignalAlphaTelegramBot {
       `Max Consecutive Losses: ${CONFIG.RISK.MAX_CONSECUTIVE_LOSSES}`,
       `Active Signals: ${stats.activeSignals}`,
       '',
-      `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK})`
-    ].join('\n');
+      `🎁 [Trade on BingX](${CONFIG.REFERRAL.LINK}) | Code: \`${CONFIG.REFERRAL.CODE}\``
 
     const buttons = isAdmin ? [
       [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('🔥 Start Live', 'START_LIVE')],
