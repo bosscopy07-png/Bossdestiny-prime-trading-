@@ -191,7 +191,7 @@ class MarketDataEngine extends EventEmitter {
     // Initialize CCXT exchange with aggressive rate limiting
     try {
       // Try Binance first (more reliable for OHLCV)
-      this.exchange = new ccxt.binance({
+      this.exchange = new ccxt.bitget({
         enableRateLimit: true,
         rateLimit: 100,
         options: {
@@ -211,7 +211,7 @@ class MarketDataEngine extends EventEmitter {
 
       // Fallback to BingX
       try {
-        this.exchange = new ccxt.bingx({
+        this.exchange = new ccxt.okx({
           enableRateLimit: true,
           rateLimit: 200,
           options: {
