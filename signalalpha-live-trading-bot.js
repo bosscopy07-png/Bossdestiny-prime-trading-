@@ -3038,7 +3038,7 @@ async start() {
   process.once('SIGINT', () => this.shutdown('SIGINT'));
   process.once('SIGTERM', () => this.shutdown('SIGTERM'));
 }
-  
+}
   
 // ==========================================
 // MAIN ENTRY POINT
