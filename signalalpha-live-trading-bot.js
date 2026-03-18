@@ -179,19 +179,29 @@ class TradeLogger {
   }
 }
 
+
 // ==========================================
-// IMPROVED MARKET DATA ENGINE
+// REPLACE MarketDataEngine CONSTRUCTOR & initialize IN PART 1
 // ==========================================
+
 class MarketDataEngine extends EventEmitter {
   constructor() {
     super();
-
+    
+    // Initialize ALL properties FIRST
+    this.priceCache = new Map();
+    this.ohlcvCache = new Map();
+    this.wsConnections = new Map();
+    this.isRunning = false;
+    this.perpetualMarkets = [];
+    this.lastUpdate = Date.now();
+    this.exchange = null;
+    
     console.log('🏗️ Initializing MarketDataEngine...');
-
-    // Initialize CCXT exchange with aggressive rate limiting
+    
+    // Initialize exchange
     try {
-      // Try Binance first (more reliable for OHLCV)
-      this.exchange = new ccxt.bitget({
+      this.exchange = new ccxt.binance({
         enableRateLimit: true,
         rateLimit: 100,
         options: {
@@ -199,46 +209,83 @@ class MarketDataEngine extends EventEmitter {
           adjustForTimeDifference: true,
         },
       });
-
+      
       if (CONFIG.EXCHANGE.SANDBOX) {
         this.exchange.setSandboxMode(true);
       }
-
-      console.log(`✅ Exchange initialized: binance (USDT-M Futures)`);
-
+      
+      console.log('✅ Exchange initialized: binance (USDT-M Futures)');
     } catch (err) {
-      console.error('❌ Failed to initialize binance:', err.message);
-
-      // Fallback to BingX
-      try {
-        this.exchange = new ccxt.okx({
-          enableRateLimit: true,
-          rateLimit: 200,
-          options: {
-            defaultType: 'swap',
-          },
-        });
-
-        console.log('⚠️ Fallback to bingx exchange');
-      } catch (err2) {
-        throw new Error('No exchange available');
-      }
+      console.error('❌ Exchange init failed:', err.message);
+      throw err;
     }
 
-    // Test connection
-    this.exchange.fetchTime()
-      .then(() => {
-        console.log('✅ Exchange connection verified');
-      })
-      .catch(err => {
-        console.error('⚠️ Exchange connection test failed:', err.message);
-      });
+    console.log('✅ MarketDataEngine constructed');
+    console.log(`   - Cache ready: ${this.ohlcvCache.size} entries`);
+  }
 
-  } // ✅ THIS WAS MISSING
+  async initialize() {
+    console.log('🚀 Starting MarketDataEngine initialization...');
+    
+    // Safety check
+    if (!this.ohlcvCache) {
+      console.error('❌ Cache not initialized!');
+      this.ohlcvCache = new Map();
+    }
+    
+    try {
+      // Load markets with retry
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          console.log('📡 Loading markets...');
+          await this.exchange.loadMarkets();
+          break;
+        } catch (err) {
+          retries--;
+          console.log(`⚠️ Retry ${3-retries}/3...`);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      
+      const marketCount = Object.keys(this.exchange.markets).length;
+      console.log(`✅ Loaded ${marketCount} markets`);
 
-  // ==========================================
-  // REPLACE initialize METHOD IN PART 1
-  // ==========================================
+      // Filter perpetual markets
+      this.perpetualMarkets = Object.values(this.exchange.markets)
+        .filter(m => {
+          const isActive = m.active !== false;
+          const isUSDT = m.quote === 'USDT';
+          const isFuture = m.type === 'future' || m.type === 'swap';
+          return isActive && isUSDT && isFuture;
+        })
+        .map(m => m.symbol)
+        .sort();
+
+      console.log(`✅ Found ${this.perpetualMarkets.length} perpetuals`);
+      console.log(`   Examples: ${this.perpetualMarkets.slice(0, 3).join(', ')}`);
+
+      if (this.perpetualMarkets.length === 0) {
+        throw new Error('No perpetual markets found!');
+      }
+
+      // Start services
+      this.startWebSocketFeeds();
+      
+      // Delay polling start
+      setTimeout(() => this.startOhlcvPolling(), 5000);
+      
+      this.isRunning = true;
+      console.log('🎯 MarketDataEngine ready');
+      
+    } catch (err) {
+      console.error('❌ Initialization failed:', err.message);
+      throw err;
+    }
+      }
+
+        
+
 // ==========================================
 // REPLACE initialize METHOD IN PART 1
 // ==========================================
@@ -500,73 +547,74 @@ startWebSocketFeeds() {
 // ==========================================
 
 startOhlcvPolling() {
-  console.log('⏱️ Starting OHLCV polling (30s interval)...');
+  console.log('⏱️ Starting OHLCV polling...');
   
-  const poll = async () => {
-    if (!this.isRunning) return;
+  // Bind context
+  const self = this;
+  
+  const poll = async function() {
+    if (!self.isRunning) {
+      console.log('⏹️ Polling stopped (not running)');
+      return;
+    }
+    
+    // Safety check for cache
+    if (!self.ohlcvCache) {
+      console.error('❌ ohlcvCache is undefined!');
+      self.ohlcvCache = new Map();
+    }
     
     try {
-      // Get valid symbols only
-      const validSymbols = this.perpetualMarkets
-        .filter(s => this.isValidSymbol(s))
-        .slice(0, 20); // Limit to top 20
+      const symbols = self.perpetualMarkets
+        .filter(s => self.isValidSymbol(s))
+        .slice(0, 15);
       
-      if (validSymbols.length === 0) {
-        console.log('⚠️ No valid symbols to poll');
-        await new Promise(r => setTimeout(r, 30000));
-        if (this.isRunning) setTimeout(poll, 30000);
+      if (symbols.length === 0) {
+        console.log('⚠️ No valid symbols');
+        setTimeout(poll, 30000);
         return;
       }
       
-      console.log(`🔄 Polling ${validSymbols.length} symbols...`);
-      let successCount = 0;
+      console.log(`🔄 Polling ${symbols.length} symbols...`);
+      let fetched = 0;
       
-      for (const symbol of validSymbols) {
-        if (!this.isRunning) break;
+      for (const symbol of symbols) {
+        if (!self.isRunning) break;
         
-        // Only fetch 15m and 1h to reduce load
-        const timeframes = ['15m', '1h'];
-        
-        for (const timeframe of timeframes) {
+        for (const tf of ['15m', '1h']) {
           try {
-            const ohlcv = await this.safeFetchOHLCV(symbol, timeframe, 100);
-            
-            if (ohlcv && ohlcv.length > 0) {
-              const key = `${symbol}_${timeframe}`;
-              this.ohlcvCache.set(key, {
-                data: ohlcv,
-                timestamp: Date.now(),
+            const data = await self.safeFetchOHLCV(symbol, tf, 100);
+            if (data) {
+              self.ohlcvCache.set(`${symbol}_${tf}`, {
+                data,
+                timestamp: Date.now()
               });
-              successCount++;
+              fetched++;
             }
-            
-            // Wait between requests to respect rate limits
-            await new Promise(r => setTimeout(r, 200));
-            
-          } catch (err) {
-            // Continue on error
+            await new Promise(r => setTimeout(r, 250));
+          } catch (e) {
+            // Continue
           }
         }
       }
       
-      this.lastUpdate = Date.now();
-      console.log(`✅ Poll complete: ${successCount} fetches, cache: ${this.ohlcvCache.size}`);
+      console.log(`✅ Fetched ${fetched}, cache size: ${self.ohlcvCache.size}`);
       
     } catch (err) {
       console.error('❌ Polling error:', err.message);
     }
     
-    // Schedule next poll (30 seconds)
-    if (this.isRunning) {
+    // Schedule next
+    if (self.isRunning) {
       setTimeout(poll, 30000);
     }
   };
   
-  // Start first poll after delay
+  // Start after delay
   setTimeout(poll, 10000);
-  console.log('✅ OHLCV polling active');
+  console.log('✅ Polling scheduled');
 }
-    
+  
   // =========================
   // FETCH OHLCV
   // =========================
@@ -1986,23 +2034,30 @@ class StrategyDetector {
 // ==========================================
 
 class RealTimeSignalGenerator extends EventEmitter {
-  constructor(marketData, ta, confidence, strategy) {
-    super();
-    this.marketData = marketData;
-    this.ta = ta;
-    this.confidence = confidence;
-    this.strategy = strategy;
-    this.activeSignals = new Map();
-    this.tradeLogger = new TradeLogger();
-    this.isScanning = false;
-    this.scanStats = {
-      lastScan: null,
-      signalsToday: 0,
-      scansCompleted: 0,
-    };
-    console.log('🎯 RealTimeSignalGenerator initialized');
+constructor(marketData, ta, confidence, strategy) {
+  super();
+  
+  // Initialize ALL properties first
+  this.marketData = marketData;
+  this.ta = ta;
+  this.confidence = confidence;
+  this.strategy = strategy;
+  this.activeSignals = new Map();
+  this.tradeLogger = new TradeLogger();
+  this.isScanning = false;
+  this.scanStats = {
+    lastScan: null,
+    signalsToday: 0,
+    scansCompleted: 0,
+  };
+  
+  // Safety check
+  if (!marketData) {
+    throw new Error('MarketDataEngine required');
   }
-
+  
+  console.log('🎯 RealTimeSignalGenerator initialized');
+}
   // ==========================================
   // MULTI-TIMEFRAME ANALYSIS
   // ==========================================
@@ -3009,38 +3064,49 @@ this.bot.action('GET_SIGNAL', async (ctx) => {
   // ==========================================
   // MAIN STARTUP
   // ==========================================
+
+async start() {
+  console.log('🚀 Starting SignalAlpha Bot...');
   
-  async start() {
-    console.log('🚀 Starting SignalAlpha Bot...');
-    
-    // Initialize market data
+  try {
+    // Step 1: Initialize market data (CRITICAL - must complete first)
+    console.log('📡 Step 1: Initializing market data...');
     await this.marketData.initialize();
     
-    // Launch bot
-    await this.bot.launch();
-    console.log('✅ Telegram bot launched');
-    
-    // Auto-start scanning if configured
-    if (process.env.AUTO_START_SCAN === 'true') {
-      console.log('🔥 Auto-starting continuous scanning...');
-      setTimeout(() => this.generator.startContinuousScanning(), 5000);
+    // Verify initialization
+    if (!this.marketData.isRunning) {
+      throw new Error('MarketDataEngine failed to start');
     }
-
-    // Graceful shutdown
-    process.once('SIGINT', () => this.shutdown('SIGINT'));
-    process.once('SIGTERM', () => this.shutdown('SIGTERM'));
     
-    console.log('🎯 SignalAlpha v2.0 is LIVE!');
+    console.log('✅ Market data ready');
+    console.log(`   - Markets: ${this.marketData.perpetualMarkets.length}`);
+    console.log(`   - Cache: ${this.marketData.ohlcvCache?.size || 0} entries`);
+    
+    // Step 2: Launch bot
+    console.log('🤖 Step 2: Launching Telegram bot...');
+    await this.bot.launch();
+    
+    // Step 3: Auto-start if configured
+    if (process.env.AUTO_START_SCAN === 'true') {
+      console.log('🔥 Auto-starting scanner...');
+      setTimeout(() => {
+        this.generator.startContinuousScanning();
+      }, 10000);
+    }
+    
+    console.log('✅ SignalAlpha v2.0 is LIVE!');
+    
+  } catch (err) {
+    console.error('💥 Startup failed:', err.message);
+    throw err;
   }
-
-  shutdown(signal) {
-    console.log(`\n👋 ${signal} received, shutting down gracefully...`);
-    this.generator.stopScanning();
-    this.bot.stop(signal);
-    process.exit(0);
-  }
+  
+  // Graceful shutdown
+  process.once('SIGINT', () => this.shutdown('SIGINT'));
+  process.once('SIGTERM', () => this.shutdown('SIGTERM'));
 }
-
+  
+  
 // ==========================================
 // MAIN ENTRY POINT
 // ==========================================
