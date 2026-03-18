@@ -201,7 +201,7 @@ class MarketDataEngine extends EventEmitter {
     
     // Initialize exchange
     try {
-      this.exchange = new ccxt.binance({
+      this.exchange = new ccxt.bitget({
         enableRateLimit: true,
         rateLimit: 100,
         options: {
@@ -224,7 +224,12 @@ class MarketDataEngine extends EventEmitter {
     console.log(`   - Cache ready: ${this.ohlcvCache.size} entries`);
   }
 
-  async initialize() {
+  
+// ==========================================
+// REPLACE initialize METHOD IN PART 1
+// ==========================================
+  
+async initialize() {
     console.log('🚀 Starting MarketDataEngine initialization...');
     
     // Safety check
@@ -283,78 +288,6 @@ class MarketDataEngine extends EventEmitter {
       throw err;
     }
       }
-
-        
-
-// ==========================================
-// REPLACE initialize METHOD IN PART 1
-// ==========================================
-
-async initialize() {
-  console.log('🚀 Starting MarketDataEngine initialization...');
-  
-  try {
-    // Load markets with retry
-    let retries = 3;
-    while (retries > 0) {
-      try {
-        console.log('📡 Loading markets from exchange...');
-        await this.exchange.loadMarkets();
-        break;
-      } catch (err) {
-        retries--;
-        if (retries === 0) throw err;
-        console.log(`⚠️ Market load failed, retrying... (${retries} left)`);
-        await new Promise(r => setTimeout(r, 2000));
-      }
-    }
-    
-    const marketCount = Object.keys(this.exchange.markets).length;
-    logger.info(`Loaded ${marketCount} markets`);
-    console.log(`✅ Loaded ${marketCount} markets`);
-
-    // Filter active USDT perpetual futures
-    console.log('🔍 Filtering perpetual markets...');
-    this.perpetualMarkets = Object.values(this.exchange.markets)
-      .filter(m => {
-        // Binance futures format: BTC/USDT
-        // Must be active, USDT quoted, and a future/swap
-        const isActive = m.active !== false;
-        const isUSDT = m.quote === 'USDT' || m.quoteId === 'USDT';
-        const isFuture = m.type === 'future' || m.type === 'swap';
-        const isPerp = m.linear === true || m.contract === true;
-        
-        return isActive && isUSDT && (isFuture || isPerp);
-      })
-      .map(m => m.symbol)
-      .sort();
-    
-    logger.info(`Found ${this.perpetualMarkets.length} active perpetual markets`);
-    console.log(`✅ Found ${this.perpetualMarkets.length} perpetual markets`);
-    console.log(`📊 Top markets: ${this.perpetualMarkets.slice(0, 10).join(', ')}...`);
-
-    if (this.perpetualMarkets.length === 0) {
-      throw new Error('No perpetual markets found - check exchange configuration');
-    }
-
-    // Start WebSocket feeds
-    console.log('🔌 Starting WebSocket feeds...');
-    this.startWebSocketFeeds();
-    
-    // Start polling for OHLCV (delayed)
-    console.log('📈 Starting OHLCV polling...');
-    setTimeout(() => this.startOhlcvPolling(), 5000);
-    
-    this.isRunning = true;
-    console.log('🎯 MarketDataEngine fully initialized and running');
-    
-  } catch (err) {
-    logger.error('Failed to initialize market data:', err);
-    console.error('❌ MarketDataEngine initialization failed:', err.message);
-    throw err;
-  }
-}
-  
 
   // ==========================================
 // REPLACE get24hVolume in Part 1
