@@ -2130,14 +2130,25 @@ async analyzeSymbol(symbol) {
 
     // Calculate confidence
     const confidence = this.confidence.calculate(fullAnalysis);
-    
-    console.log(`📊 ${normalizedSymbol}: ${setup.type} ${setup.direction} | Score: ${confidence.score}% (${confidence.tier}) | R:R ${setup.rr.toFixed(2)}:1`);
+
+console.log(`📊 ${normalizedSymbol}: ${setup.type} ${setup.direction} | Score: ${confidence.score}% | R:R ${setup.rr.toFixed(2)}:1 | Vol: ${primary.volume.ratio.toFixed(2)}x`);
 
     return {
       ...fullAnalysis,
       confidence,
       timestamp: Date.now(),
     };
+
+    if (!confidence.passed) {
+  console.log(`   ❌ REJECTED: ${confidence.recommendation}`);
+  console.log(`      Details: ${confidence.details.slice(0, 3).join(', ')}`);
+  if (confidence.penalties.length > 0) {
+    console.log(`      Penalties: ${confidence.penalties.join(', ')}`);
+  }
+  return null;
+}
+
+console.log(`   ✅ PASSED: ${confidence.tier} grade signal`);
 
   } catch (err) {
     logger.error(`Analysis failed for ${normalizedSymbol}:`, err.message);
@@ -2682,6 +2693,46 @@ this.bot.command('signal', async (ctx) => {
       await ctx.reply('⏹️ Scanning stopped.');
     });
 
+// In setupCommands, add:
+this.bot.command('diagnose', async (ctx) => {
+  if (!ctx.isAdmin) return ctx.reply('⛔ Admin only');
+  
+  await ctx.reply('🔍 Running diagnostic scan (showing near-misses)...');
+  
+  const symbols = await this.marketData.getTopVolumeSymbols(10);
+  const results = [];
+  
+  for (const symbol of symbols) {
+    const analysis = await this.generator.analyzeSymbol(symbol, true); // Force analysis
+    
+    if (analysis) {
+      results.push({
+        symbol,
+        score: analysis.confidence.score,
+        tier: analysis.confidence.tier,
+        passed: analysis.confidence.passed,
+        setup: analysis.setup?.type,
+        rr: analysis.setup?.rr?.toFixed(2),
+      });
+    }
+  }
+  
+  // Sort by score
+  results.sort((a, b) => b.score - a.score);
+  
+  const text = [
+    '📊 *Diagnostic Results*',
+    '',
+    ...results.map(r => 
+      `${r.passed ? '✅' : '❌'} ${r.symbol}: ${r.score}% (${r.tier}) | ${r.setup || 'No setup'} | R:R ${r.rr || 'N/A'}`
+    ).slice(0, 10),
+    '',
+    'Top 3 near-misses shown. If all <55%, markets are choppy.'
+  ].join('\n');
+  
+  await ctx.reply(text, { parse_mode: 'Markdown' });
+});
+    
     // /stats - System statistics
     this.bot.command('stats', async (ctx) => {
       const stats = this.generator.getStats();
