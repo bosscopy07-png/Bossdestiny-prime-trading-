@@ -199,7 +199,7 @@ class MarketDataEngine extends EventEmitter {
     
     console.log('🏗️ Initializing MarketDataEngine...');
 
-    ohllcv
+    
     // Initialize exchange
     try {
       this.exchange = new ccxt.bitget({
@@ -1015,7 +1015,7 @@ class InstitutionalTA {
       };
     }
 
-    const highs = ohllcv.map(c => c[2]);
+    const highs = ohlcv.map(c => c[2]);
     const lows = ohlcv.map(c => c[3]);
     const closes = ohlcv.map(c => c[4]);
     const opens = ohlcv.map(c => c[1]);
