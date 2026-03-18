@@ -198,7 +198,8 @@ class MarketDataEngine extends EventEmitter {
     this.exchange = null;
     
     console.log('🏗️ Initializing MarketDataEngine...');
-    
+
+    ohllcv
     // Initialize exchange
     try {
       this.exchange = new ccxt.bitget({
