@@ -6,13 +6,16 @@
 import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
-import { formatDashboard, formatSignalMessage } from '../signals/formatter.js';
+import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
 
 /**
  * Register all bot commands
  */
 export function registerCommands(bot, generator, marketData) {
   
+  // Helper to check if system is ready
+  const isReady = () => marketData.isRunning && marketData.exchange;
+
   // /start — Welcome
   bot.command('start', async (ctx) => {
     try {
@@ -22,19 +25,13 @@ export function registerCommands(bot, generator, marketData) {
         '🎯 *SignalAlpha v3\\.0 — Institutional Signals*',
         '',
         'Real\\-time crypto futures analysis with multi\\-layer scoring\\.',
-        'Quality over quantity\\. Survival over hype\\.',
         '',
-        '*Key Features:*',
-        '• 60%\\+ confidence threshold with 6 weighted factors',
-        '• BTC trend filter for market context',
-        '• Adaptive leverage \\(5x–20x based on setup quality\\)',
-        '• Cooldown system after consecutive losses',
-        '• Multi\\-timeframe confluence \\(1m–4h\\)',
-        '',
+        '*Commands:*',
         '📊 /dashboard — View challenge progress',
         '🎯 /signal — Get manual signal scan',
         '🔥 /live — Start auto\\-scanning \\(admin\\)',
-        '🩺 /diagnose — Show near\\-misses \\(admin\\)',
+        '',
+        isReady() ? '✅ System ready' : '⏳ System initializing\\.\\.\\.',
         '',
         `🎁 [Trade on BingX](${escapeMarkdownV2(CONFIG.REFERRAL.LINK)}) | Code: \\${'`'}${escapeMarkdownV2(CONFIG.REFERRAL.CODE)}\\${'`'}`
       ].join('\n');
@@ -46,10 +43,6 @@ export function registerCommands(bot, generator, marketData) {
           [
             Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
             Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')
-          ],
-          [
-            Markup.button.callback('📈 Stats', 'STATS'),
-            Markup.button.callback('⚙️ Settings', 'SETTINGS')
           ]
         ])
       });
@@ -62,9 +55,13 @@ export function registerCommands(bot, generator, marketData) {
   // /dashboard — Challenge progress
   bot.command('dashboard', async (ctx) => {
     try {
+      if (!isReady()) {
+        return ctx.reply('⏳ System initializing, please wait...');
+      }
+      
       const stats = generator.getStats();
       const text = formatDashboard(stats, marketData, CONFIG.CHALLENGE);
-      const isAdmin = isAdminUser(ctx);
+      const isAdmin = CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
       
       const buttons = isAdmin ? [
         [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('🔥 Start Live', 'START_LIVE')],
@@ -89,6 +86,10 @@ export function registerCommands(bot, generator, marketData) {
   // /signal — Manual scan
   bot.command('signal', async (ctx) => {
     try {
+      if (!isReady()) {
+        return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
+      }
+
       await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'Markdown' });
       
       const symbols = await marketData.getTopVolumeSymbols(15);
@@ -97,8 +98,6 @@ export function registerCommands(bot, generator, marketData) {
       for (const symbol of symbols) {
         const signal = await generator.generateSignal(symbol);
         if (signal) {
-          ctx.session = ctx.session || {};
-          ctx.session.lastSignal = signal;
           await ctx.reply(formatSignalMessage(signal), {
             parse_mode: 'Markdown',
             ...Markup.inlineKeyboard([
@@ -116,9 +115,9 @@ export function registerCommands(bot, generator, marketData) {
         await ctx.reply([
           '❌ *No qualified setups found*',
           '',
-          'Markets are consolidating or signals don\'t meet quality thresholds\\.',
+          'Markets are consolidating or signals don\\\'t meet quality thresholds\\.',
           '',
-          'Try again in 15\\-30 minutes, or enable auto\\-alerts\\.',
+          'Try again in 15\\-30 minutes\\.',
           '',
           'Quality \\> Quantity\\. Patience pays\\.'
         ].join('\n'), {
@@ -138,8 +137,12 @@ export function registerCommands(bot, generator, marketData) {
   // /live — Start scanning (admin only)
   bot.command('live', async (ctx) => {
     try {
-      if (!isAdminUser(ctx)) {
+      if (!isAdmin(ctx)) {
         return ctx.reply('⛔ Admin only command');
+      }
+      
+      if (!isReady()) {
+        return ctx.reply('⏳ System not ready yet');
       }
       
       await ctx.reply('🔥 Starting live market scanning...');
@@ -153,7 +156,7 @@ export function registerCommands(bot, generator, marketData) {
   // /stop — Stop scanning (admin only)
   bot.command('stop', async (ctx) => {
     try {
-      if (!isAdminUser(ctx)) {
+      if (!isAdmin(ctx)) {
         return ctx.reply('⛔ Admin only command');
       }
       
@@ -168,9 +171,13 @@ export function registerCommands(bot, generator, marketData) {
   // /diagnose — Show near-misses (admin only)
   bot.command('diagnose', async (ctx) => {
     try {
-      if (!isAdminUser(ctx)) return ctx.reply('⛔ Admin only');
+      if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only');
       
-      await ctx.reply('🔍 Running diagnostic scan (showing near-misses)...');
+      if (!isReady()) {
+        return ctx.reply('⏳ System not ready yet');
+      }
+      
+      await ctx.reply('🔍 Running diagnostic scan...');
       
       const symbols = await marketData.getTopVolumeSymbols(10);
       const results = [];
@@ -199,7 +206,7 @@ export function registerCommands(bot, generator, marketData) {
           `${r.passed ? '✅' : '❌'} ${escapeMarkdownV2(r.symbol)}: ${r.score}% (${escapeMarkdownV2(r.tier)}) | ${escapeMarkdownV2(r.setup || 'No setup')} | R:R ${r.rr || 'N/A'}`
         ).slice(0, 10),
         '',
-        'Top 10 near\\-misses shown\\. If all \\<<55%, markets are choppy\\.'
+        'Top 10 near\\-misses shown\\.'
       ].join('\n');
       
       await ctx.reply(text, { parse_mode: 'MarkdownV2' });
@@ -237,25 +244,19 @@ export function registerCommands(bot, generator, marketData) {
     }
   });
 
-  botLogger.info('Commands registered: /start, /dashboard, /signal, /live, /stop, /diagnose, /stats');
+  botLogger.info('Commands registered');
 }
 
 // ==========================================
 // HELPERS
 // ==========================================
 
-/**
- * Check if the user is an admin
- */
-function isAdminUser(ctx) {
+function isAdmin(ctx) {
   return CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
 }
 
-/**
- * Sleep utility for async delays
- */
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(r => setTimeout(r, ms));
 }
 
 /**
@@ -283,4 +284,5 @@ function escapeMarkdownV2(text) {
     .replace(/\}/g, '\\}')
     .replace(/\./g, '\\.')
     .replace(/!/g, '\\!');
-}
+        }
+        
