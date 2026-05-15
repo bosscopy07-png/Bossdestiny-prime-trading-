@@ -13,6 +13,8 @@ import { StrategyDetector } from '../strategy/detector.js';
 import { ConfidenceEngine } from '../strategy/scoring.js';
 import { calculatePosition } from '../risk/positionSizing.js';
 import { RiskManager } from '../risk/cooldown.js';
+import { SignalMonitor } from './monitor.js';
+import { TradeLogger } from '../utils/tradeLogger.js';
 
 export class SignalGenerator extends EventEmitter {
   constructor(marketData) {
@@ -26,6 +28,8 @@ export class SignalGenerator extends EventEmitter {
     this.strategy = new StrategyDetector();
     this.confidence = new ConfidenceEngine();
     this.riskManager = new RiskManager();
+    this.monitor = new SignalMonitor(marketData, (id, result, price) => this._onSignalClose(id, result, price));
+    this.tradeLogger = new TradeLogger();
     this.activeSignals = new Map();
     this.isScanning = false;
     this.scanStats = {
@@ -41,7 +45,6 @@ export class SignalGenerator extends EventEmitter {
 
   /**
    * Analyze a single symbol across timeframes
-   * FIXED: Removed unreachable code after return statement
    */
   async analyzeSymbol(symbol, force = false) {
     if (!symbol) {
@@ -58,7 +61,7 @@ export class SignalGenerator extends EventEmitter {
     }
 
     try {
-      // Fetch timeframe data with delays
+      // Fetch timeframe data with rate-limit delays
       const m15 = await this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100);
       await sleep(300);
       
@@ -71,22 +74,23 @@ export class SignalGenerator extends EventEmitter {
         await sleep(300);
         m5 = await this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100);
       } catch {
-        // Optional
+        // 5m is optional — don't fail if unavailable
       }
       
       try {
         await sleep(300);
         h4 = await this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50);
       } catch {
-        // Optional
+        // 4h is optional — don't fail if unavailable
       }
 
+      // Must have 15m and 1h at minimum
       if (!m15 || m15.length < 20 || !h1 || h1.length < 10) {
         signalLogger.debug(`Insufficient data: ${normalizedSymbol}`);
         return null;
       }
 
-      // Get price with retry
+      // Get price with retry logic
       let currentPrice = null;
       let retries = 3;
       while (retries > 0 && !currentPrice) {
@@ -98,14 +102,14 @@ export class SignalGenerator extends EventEmitter {
       }
       
       if (!currentPrice || currentPrice <= 0) {
-        signalLogger.debug(`No price: ${normalizedSymbol}`);
+        signalLogger.debug(`No valid price: ${normalizedSymbol}`);
         return null;
       }
 
-      // Volume check
+      // Volume check — reject illiquid coins
       const volume24h = await this.marketData.get24hVolume(normalizedSymbol);
       if (!volume24h || volume24h < CONFIG.TA.MIN_VOLUME_USD) {
-        signalLogger.debug(`Low volume: ${normalizedSymbol} $${volume24h || 0}`);
+        signalLogger.debug(`Low volume rejected: ${normalizedSymbol} $${volume24h || 0}`);
         return null;
       }
 
@@ -118,13 +122,13 @@ export class SignalGenerator extends EventEmitter {
       // Multi-timeframe confluence
       const multiTimeframe = buildMultiTimeframe(analysis15m, analysis1h, analysis4h);
 
-      // BTC trend filter
+      // BTC trend filter — reduces altcoin risk when BTC is volatile/opposing
       const btcTrend = await this.marketData.getBTCTrend();
 
-      // Primary analysis
+      // Primary analysis uses 15m as entry timeframe
       const primary = analysis15m;
 
-      // Detect strategy setup
+      // Detect strategy setup from available patterns
       const setup = this.strategy.detect({
         ...primary,
         multiTimeframe,
@@ -136,12 +140,13 @@ export class SignalGenerator extends EventEmitter {
         return null;
       }
 
+      // Validate minimum risk:reward
       if (setup.rr < CONFIG.RISK.MIN_RR) {
-        signalLogger.debug(`R:R too low: ${normalizedSymbol} ${setup.rr.toFixed(2)}:1`);
+        signalLogger.debug(`R:R too low: ${normalizedSymbol} ${setup.rr.toFixed(2)}:1 (min ${CONFIG.RISK.MIN_RR})`);
         return null;
       }
 
-      // Build full analysis for scoring
+      // Build complete analysis object for confidence scoring
       const fullAnalysis = {
         symbol: normalizedSymbol,
         price: currentPrice,
@@ -154,10 +159,10 @@ export class SignalGenerator extends EventEmitter {
         setup,
         atr: primary.atr,
         btcTrend,
-        ohlcv: m15, // For overextension check
+        ohlcv: m15,
       };
 
-      // Calculate confidence
+      // Calculate confidence score
       const confidence = this.confidence.calculate(fullAnalysis);
 
       signalLogger.info(
@@ -166,13 +171,13 @@ export class SignalGenerator extends EventEmitter {
         `Vol: ${primary.volume.ratio.toFixed(2)}x`
       );
 
-      // ─── CRITICAL FIX: Confidence filter now executes ─────────
+      // Apply confidence filter unless forced (diagnostic mode)
       if (!force && !confidence.passed) {
-        signalLogger.info(`REJECTED: ${confidence.recommendation}`);
+        signalLogger.info(`REJECTED: ${normalizedSymbol} — ${confidence.recommendation}`);
         return null;
       }
 
-      signalLogger.info(`PASSED: ${confidence.tier} grade signal`);
+      signalLogger.info(`PASSED: ${normalizedSymbol} — ${confidence.tier} grade signal`);
 
       return {
         ...fullAnalysis,
@@ -196,27 +201,28 @@ export class SignalGenerator extends EventEmitter {
     const position = calculatePosition(setup, confidence, atr, currentCapital);
     
     if (!position) {
-      signalLogger.warn('Position calculation failed');
+      signalLogger.warn('Position calculation failed — rejecting signal');
       return null;
     }
 
+    // Challenge progress percentage
     const progress = ((currentCapital - CONFIG.CHALLENGE.START_CAPITAL) / 
                      (CONFIG.CHALLENGE.TARGET - CONFIG.CHALLENGE.START_CAPITAL)) * 100;
 
-    // Execution steps
+    // Execution steps for trader
     const steps = [
       `Enter ${setup.timeframe} on ${setup.direction === 'bullish' ? 'green' : 'red'} candle close`,
       `Stop: $${setup.stop.toFixed(4)} (${((Math.abs(setup.stop - setup.entry) / setup.entry) * 100).toFixed(2)}%)`,
-      `Target: $${setup.target.toFixed(4)} (R:R ${setup.rr.toFixed(2)}:1)`,
+      `Target 1: $${setup.target.toFixed(4)} (R:R ${setup.rr.toFixed(2)}:1)`,
     ];
 
-    // Scale-out plan
+    // Scale-out plan for good R:R setups
     if (setup.rr >= 2) {
       const scalePrice = setup.entry + (setup.target - setup.entry) * 0.5 * (setup.direction === 'bullish' ? 1 : -1);
       steps.push(`Scale 50% at $${scalePrice.toFixed(4)} (1:1 R:R), move SL to breakeven`);
     }
 
-    // Second take profit for high R:R
+    // Second take profit for excellent R:R
     let takeProfit2 = null;
     if (setup.rr >= 2.5) {
       takeProfit2 = setup.entry + (setup.target - setup.entry) * 0.75 * (setup.direction === 'bullish' ? 1 : -1);
@@ -237,7 +243,7 @@ export class SignalGenerator extends EventEmitter {
         tier: confidence.tier,
         level: confidence.confidence,
         details: confidence.details,
-        bonuses: confidence.bonalties,
+        bonuses: confidence.bonuses,        // FIXED: was "bonalties"
         penalties: confidence.penalties,
         recommendation: confidence.recommendation,
       },
@@ -299,51 +305,73 @@ export class SignalGenerator extends EventEmitter {
   }
 
   /**
-   * Generate signal for symbol
+   * Generate signal for symbol with full risk checks
    */
   async generateSignal(symbol, force = false) {
     signalLogger.info(`Generating signal: ${symbol} (force=${force})`);
 
-    // Check risk state
+    // Risk state check — cooldown, daily loss limits, consecutive losses
     if (!force && !this.riskManager.canTrade()) {
       signalLogger.warn('Signal blocked by risk manager');
       return null;
     }
 
-    // Check daily limit
+    // Daily signal cap
     const todayCount = this._getTodaySignalCount();
     if (!force && todayCount >= CONFIG.RISK.MAX_SIGNALS_PER_DAY) {
-      signalLogger.info(`Daily limit: ${todayCount}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`);
+      signalLogger.info(`Daily limit reached: ${todayCount}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`);
       return null;
     }
 
-    // Check max active trades
+    // Max concurrent positions
     if (!force && this.activeSignals.size >= CONFIG.RISK.MAX_ACTIVE_TRADES) {
       signalLogger.warn(`Max active trades: ${this.activeSignals.size}/${CONFIG.RISK.MAX_ACTIVE_TRADES}`);
       return null;
     }
 
+    // Run full analysis
     const analysis = await this.analyzeSymbol(symbol, force);
     if (!analysis) return null;
 
+    // Build signal object
     const signal = this.buildSignal(analysis);
     if (!signal) return null;
 
-    // Track and emit
+    // Track active signal
     this.activeSignals.set(signal.id, signal);
     this._incrementTodayCount();
+
+    // Emit for bot notification
     this.emit('signal', signal);
 
-    signalLogger.info(`SIGNAL CREATED: ${signal.id.slice(0, 8)} | ${symbol} ${signal.direction} | ${signal.confidence.score}%`);
+    // Persist to trade log
+    await this.tradeLogger.log('SIGNAL_GENERATED', {
+      signalId: signal.id,
+      symbol: signal.symbol,
+      direction: signal.direction,
+      confidence: signal.confidence.score,
+      strategy: signal.strategy,
+      quality: signal.quality,
+      rr: signal.riskReward,
+      entry: signal.entry.price,
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfit,
+    });
 
-    // Start monitoring
-    this._monitorSignal(signal.id);
+    signalLogger.info(
+      `SIGNAL CREATED: ${signal.id.slice(0, 8)} | ` +
+      `${symbol} ${signal.direction} | ` +
+      `${signal.confidence.score}% ${signal.quality}`
+    );
+
+    // Start price monitoring for SL/TP
+    this.monitor.start(signal);
 
     return signal;
   }
 
   /**
-   * Start continuous scanning loop
+   * Start continuous market scanning
    */
   async startContinuousScanning() {
     if (this.isScanning) {
@@ -357,6 +385,7 @@ export class SignalGenerator extends EventEmitter {
 
     while (this.isScanning) {
       try {
+        // Skip cycle if in cooldown or daily loss limit hit
         if (!this.riskManager.canTrade()) {
           await sleep(60000);
           continue;
@@ -364,36 +393,51 @@ export class SignalGenerator extends EventEmitter {
 
         const todayCount = this._getTodaySignalCount();
         if (todayCount >= CONFIG.RISK.MAX_SIGNALS_PER_DAY) {
-          signalLogger.info(`Daily limit reached, pausing...`);
+          signalLogger.info(`Daily limit reached (${todayCount}), pausing 5min...`);
           await sleep(300000);
           continue;
         }
 
         this.scanStats.scansCompleted++;
-        signalLogger.info(`Scan cycle #${this.scanStats.scansCompleted} | Signals: ${todayCount}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`);
+        signalLogger.info(
+          `Scan cycle #${this.scanStats.scansCompleted} | ` +
+          `Signals: ${todayCount}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`
+        );
 
+        // Get top volume pairs and shuffle for variety
         const symbols = await this.marketData.getTopVolumeSymbols(CONFIG.SCAN.TOP_VOLUME_COUNT);
         const shuffled = [...symbols].sort(() => 0.5 - Math.random());
 
         for (const symbol of shuffled) {
           if (!this.isScanning) break;
           
-          // Skip if active signal exists
+          // Skip if already have active signal for this symbol (2h cooldown per symbol)
           const hasActive = Array.from(this.activeSignals.values())
             .some(s => s.symbol === symbol && Date.now() - new Date(s.timestamp).getTime() < 7200000);
           
-          if (hasActive) continue;
+          if (hasActive) {
+            signalLogger.debug(`Skipping ${symbol} — active signal exists`);
+            continue;
+          }
 
           const signal = await this.generateSignal(symbol);
           if (signal) {
+            // Throttle between signals
             await sleep(3000);
-            if (this._getTodaySignalCount() >= CONFIG.RISK.MAX_SIGNALS_PER_DAY) break;
+            
+            // Check if daily limit hit after this signal
+            if (this._getTodaySignalCount() >= CONFIG.RISK.MAX_SIGNALS_PER_DAY) {
+              break;
+            }
           } else {
+            // Brief pause between failed scans
             await sleep(500);
           }
         }
 
         this.scanStats.lastScan = new Date();
+        
+        // Randomized wait between cycles (30-60s) to avoid pattern detection
         const waitTime = 30000 + Math.random() * 30000;
         await sleep(waitTime);
         
@@ -411,69 +455,19 @@ export class SignalGenerator extends EventEmitter {
   }
 
   /**
-   * Monitor active signal for SL/TP hits
+   * Handle signal closure from monitor
    */
-  _monitorSignal(signalId) {
+  _onSignalClose(signalId, result, exitPrice) {
     const signal = this.activeSignals.get(signalId);
-    if (!signal) return;
-
-    signalLogger.info(`Monitoring ${signal.symbol} ${signal.direction}`);
-
-    let checkCount = 0;
-    const checkInterval = setInterval(async () => {
-      try {
-        checkCount++;
-        const currentPrice = await this.marketData.getCurrentPrice(signal.symbol);
-        if (!currentPrice) return;
-
-        // Progress log every 10 checks (~50s)
-        if (checkCount % 10 === 0) {
-          const pnlPct = signal.direction === 'LONG' 
-            ? ((currentPrice - signal.entry.price) / signal.entry.price) * 100
-            : ((signal.entry.price - currentPrice) / signal.entry.price) * 100;
-          signalLogger.info(`${signal.symbol} | Check #${checkCount} | P&L: ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
-        }
-
-        // Check exits
-        const isLong = signal.direction === 'LONG';
-        const hitSL = isLong ? currentPrice <= signal.stopLoss : currentPrice >= signal.stopLoss;
-        const hitTP = isLong ? currentPrice >= signal.takeProfit : currentPrice <= signal.takeProfit;
-        const hitTP2 = signal.takeProfit2 && (isLong ? currentPrice >= signal.takeProfit2 : currentPrice <= signal.takeProfit2);
-
-        if (hitSL) {
-          this._closeSignal(signalId, 'stop_loss', currentPrice, checkInterval);
-        } else if (hitTP2) {
-          this._closeSignal(signalId, 'take_profit_2', currentPrice, checkInterval);
-        } else if (hitTP) {
-          this._closeSignal(signalId, 'take_profit', currentPrice, checkInterval);
-        }
-        
-      } catch (err) {
-        signalLogger.error(`Monitor error: ${err.message}`);
-      }
-    }, 5000);
-
-    // Auto-expire after 4 hours
-    setTimeout(() => {
-      if (this.activeSignals.has(signalId)) {
-        signalLogger.info(`Signal expired: ${signalId.slice(0, 8)}`);
-        clearInterval(checkInterval);
-        this.activeSignals.delete(signalId);
-      }
-    }, 4 * 3600000);
-  }
-
-  /**
-   * Close signal and update state
-   */
-  _closeSignal(signalId, result, exitPrice, interval) {
-    clearInterval(interval);
-    const signal = this.activeSignals.get(signalId);
-    if (!signal) return;
+    if (!signal) {
+      signalLogger.warn(`Close callback for unknown signal: ${signalId.slice(0, 8)}`);
+      return;
+    }
 
     const isWin = result.includes('take_profit');
+    const multiplier = result === 'take_profit_2' ? 1.5 : 1;
     const pnl = isWin 
-      ? parseFloat(signal.position.estProfit) * (result === 'take_profit_2' ? 1.5 : 1)
+      ? parseFloat(signal.position.estProfit) * multiplier
       : -parseFloat(signal.position.estLoss);
     
     const pnlPct = (pnl / CONFIG.CHALLENGE.CURRENT_CAPITAL) * 100;
@@ -483,17 +477,31 @@ export class SignalGenerator extends EventEmitter {
       `P&L: $${pnl.toFixed(2)} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`
     );
 
-    // Update risk state
+    // Update risk state (consecutive losses, cooldown)
     this.riskManager.recordResult(pnl);
     
-    // Update capital
+    // Update challenge capital
     CONFIG.CHALLENGE.CURRENT_CAPITAL += pnl;
 
+    // Persist close to trade log
+    this.tradeLogger.log('SIGNAL_CLOSED', {
+      signalId,
+      symbol: signal.symbol,
+      result,
+      exitPrice,
+      pnl,
+      pnlPct,
+      duration: Date.now() - new Date(signal.timestamp).getTime(),
+    });
+
+    // Emit for bot notifications
     this.emit('signal_closed', { signal, result, exitPrice, pnl, pnlPct });
+    
+    // Remove from active
     this.activeSignals.delete(signalId);
   }
 
-  // ─── Helpers ───────────────────────────────────────────────
+  // ─── INTERNAL HELPERS ──────────────────────────────────────
 
   _getTodaySignalCount() {
     const today = getTodayKey();
@@ -521,5 +529,5 @@ export class SignalGenerator extends EventEmitter {
       riskStatus: this.riskManager.getStatus(),
     };
   }
-          }
-        
+      }
+      
