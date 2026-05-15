@@ -128,7 +128,7 @@ export class SignalAlphaBot {
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
         await this.bot.telegram.sendMessage(adminId, text, {
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           disable_web_page_preview: true
         });
       } catch (err) {
@@ -145,10 +145,10 @@ export class SignalAlphaBot {
     
     const emoji = result.includes('take_profit') ? '🎯' : '🛑';
     const text = [
-      `${emoji} *SIGNAL CLOSED*`,
+      `${emoji} <b>SIGNAL CLOSED</b>`,
       '',
-      `${signal.symbol} ${signal.direction}`,
-      `Result: *${result.toUpperCase()}*`,
+      `${escapeHtml(signal.symbol)} ${signal.direction}`,
+      `Result: <b>${escapeHtml(result.toUpperCase())}</b>`,
       `P&L: $${Math.abs(pnl).toFixed(2)} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`,
       '',
       `Updated Capital: $${CONFIG.CHALLENGE.CURRENT_CAPITAL.toFixed(2)}`
@@ -156,7 +156,7 @@ export class SignalAlphaBot {
 
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
-        await this.bot.telegram.sendMessage(adminId, text, { parse_mode: 'Markdown' });
+        await this.bot.telegram.sendMessage(adminId, text, { parse_mode: 'HTML' });
       } catch (err) {
         botLogger.error({ err: err.message, adminId }, 'Failed to notify admin of signal close');
       }
@@ -169,7 +169,7 @@ export class SignalAlphaBot {
   async _broadcastToAdmins(message) {
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
-        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+        await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'HTML' });
       } catch (err) {
         botLogger.error({ err: err.message, adminId }, 'Broadcast to admin failed');
       }
@@ -203,4 +203,16 @@ export class SignalAlphaBot {
     botLogger.info('Shutdown complete');
     process.exit(0);
   }
+}
+
+/**
+ * Escape HTML special characters to prevent XSS and broken parsing
+ */
+function escapeHtml(text) {
+  if (typeof text !== 'string') return String(text);
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
