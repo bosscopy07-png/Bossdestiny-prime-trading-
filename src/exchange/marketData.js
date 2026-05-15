@@ -9,7 +9,12 @@ import { EventEmitter } from 'events';
 import { CONFIG } from '../config/index.js';
 import { marketLogger } from '../utils/logger.js';
 import { sleep } from '../utils/time.js';
-import { normalizeSymbol, isValidSymbol, toWsFormat, filterPerpetualMarkets } from './symbols.js';
+import { 
+  normalizeSymbol as normalizeUtil, 
+  isValidSymbol as isValidUtil,
+  toWsFormat as toWsFormatUtil,
+  filterPerpetualMarkets 
+} from './symbols.js';
 
 export class MarketDataEngine extends EventEmitter {
   constructor() {
@@ -26,6 +31,22 @@ export class MarketDataEngine extends EventEmitter {
 
     marketLogger.info('MarketDataEngine instantiated');
   }
+
+  // ─── SYMBOL WRAPPERS (REQUIRED: exposed for SignalGenerator) ───
+
+  normalizeSymbol(symbol) {
+    return normalizeUtil(symbol, this.exchange);
+  }
+
+  isValidSymbol(symbol) {
+    return isValidUtil(symbol, this.exchange);
+  }
+
+  toWsFormat(symbol) {
+    return toWsFormatUtil(symbol);
+  }
+
+  // ─── INITIALIZATION ─────────────────────────────────────────────
 
   /**
    * Initialize exchange connection and load markets
@@ -110,12 +131,12 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
+  // ─── WEBSOCKET FEEDS ────────────────────────────────────────────
+
   /**
    * Start Binance WebSocket feeds for major pairs
-   * Uses Binance WS for price data regardless of primary exchange
    */
   startWebSocketFeeds() {
-    // Top pairs by liquidity — dynamic would be better but WS needs stability
     const majorBases = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC'];
     const pairs = majorBases.map(b => `${b}USDT`.toLowerCase());
     
@@ -162,10 +183,8 @@ export class MarketDataEngine extends EventEmitter {
       ws.on('close', () => {
         marketLogger.warn(`WS closed ${pair}, reconnecting in ${CONFIG.SCAN.WS_RECONNECT_DELAY_MS}ms`);
         
-        // Clear old connection
         this.wsConnections.delete(pair);
         
-        // Schedule reconnect
         if (reconnectTimer) clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
           this._connectWebSocket(pair);
@@ -177,6 +196,8 @@ export class MarketDataEngine extends EventEmitter {
       marketLogger.error(`Failed to connect WS ${pair}: ${err.message}`);
     }
   }
+
+  // ─── OHLCV POLLING ──────────────────────────────────────────────
 
   /**
    * Start background OHLCV polling
@@ -191,9 +212,8 @@ export class MarketDataEngine extends EventEmitter {
       }
 
       try {
-        // Get subset of markets to poll
         const symbols = this.perpetualMarkets
-          .filter(s => isValidSymbol(s, this.exchange))
+          .filter(s => this.isValidSymbol(s))
           .slice(0, CONFIG.SCAN.SYMBOLS_PER_SCAN);
 
         if (symbols.length === 0) {
@@ -245,7 +265,7 @@ export class MarketDataEngine extends EventEmitter {
       return null;
     }
 
-    const validSymbol = normalizeSymbol(symbol, this.exchange);
+    const validSymbol = this.normalizeSymbol(symbol);
     if (!validSymbol) {
       marketLogger.debug(`Cannot normalize: ${symbol}`);
       return null;
@@ -288,7 +308,7 @@ export class MarketDataEngine extends EventEmitter {
    * Fetch OHLCV with cache
    */
   async fetchOHLCV(symbol, timeframe, limit = 100) {
-    const normalized = normalizeSymbol(symbol, this.exchange) || symbol;
+    const normalized = this.normalizeSymbol(symbol) || symbol;
     const key = `${normalized}_${timeframe}`;
     const cached = this.ohlcvCache.get(key);
 
@@ -309,14 +329,16 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
+  // ─── PRICE & VOLUME ─────────────────────────────────────────────
+
   /**
    * Get current price — WebSocket first, REST fallback
    */
   async getCurrentPrice(symbol) {
     if (!symbol) return null;
 
-    const normalized = normalizeSymbol(symbol, this.exchange) || symbol;
-    const wsKey = toWsFormat(normalized);
+    const normalized = this.normalizeSymbol(symbol) || symbol;
+    const wsKey = this.toWsFormat(normalized);
 
     // Try WebSocket cache
     const wsData = this.priceCache.get(wsKey);
@@ -326,7 +348,7 @@ export class MarketDataEngine extends EventEmitter {
 
     // Fallback to REST
     try {
-      if (!isValidSymbol(normalized, this.exchange)) {
+      if (!this.isValidSymbol(normalized)) {
         marketLogger.debug(`Invalid symbol for price: ${normalized}`);
         return null;
       }
@@ -344,8 +366,8 @@ export class MarketDataEngine extends EventEmitter {
   async get24hVolume(symbol) {
     if (!symbol) return 0;
     
-    const normalized = normalizeSymbol(symbol, this.exchange) || symbol;
-    if (!isValidSymbol(normalized, this.exchange)) return 0;
+    const normalized = this.normalizeSymbol(symbol) || symbol;
+    if (!this.isValidSymbol(normalized)) return 0;
 
     try {
       const ticker = await this.exchange.fetchTicker(normalized);
@@ -382,10 +404,11 @@ export class MarketDataEngine extends EventEmitter {
 
     } catch (err) {
       marketLogger.error(`Volume fetch failed: ${err.message}`);
-      // Safe fallback
       return this.perpetualMarkets.slice(0, 10);
     }
   }
+
+  // ─── BTC TREND ──────────────────────────────────────────────────
 
   /**
    * Get BTC trend analysis for market filter
@@ -423,7 +446,6 @@ export class MarketDataEngine extends EventEmitter {
       const ema50Val = ema50[ema50.length - 1];
       const ema200Val = ema200?.[ema200.length - 1];
 
-      // ATR for volatility
       const { calculateATR } = await import('../utils/math.js');
       const atr = calculateATR(h1, 14);
 
@@ -433,7 +455,7 @@ export class MarketDataEngine extends EventEmitter {
       if (current > ema20Val && ema20Val > ema50Val) {
         primary = 'bullish';
         strength = ema200Val ? (current > ema200Val ? 80 : 60) : 60;
-      } else if (current < ema20Val && ema20Val < ema50Val) {
+      } else if (current < ema20Val && ema50Val > ema50Val) {
         primary = 'bearish';
         strength = ema200Val ? (current < ema200Val ? 80 : 60) : 60;
       }
@@ -447,6 +469,8 @@ export class MarketDataEngine extends EventEmitter {
       return { primary: 'neutral', strength: 0, volatile: false };
     }
   }
+
+  // ─── SHUTDOWN ───────────────────────────────────────────────────
 
   /**
    * Graceful shutdown
@@ -471,4 +495,5 @@ export class MarketDataEngine extends EventEmitter {
 
     marketLogger.info('MarketDataEngine shut down');
   }
-}
+      }
+    
