@@ -50,12 +50,12 @@ export function registerActions(bot, generator, marketData, userSettings) {
       ];
 
       await ctx.editMessageText(text, {
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard(buttons)
       }).catch(() => {
         ctx.reply(text, {
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           disable_web_page_preview: true,
           ...Markup.inlineKeyboard(buttons)
         });
@@ -85,7 +85,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
         const signal = await generator.generateSignal(symbol);
         if (signal) {
           await ctx.reply(formatSignalMessage(signal), {
-            parse_mode: 'Markdown',
+            parse_mode: 'HTML',
             ...Markup.inlineKeyboard([
               [Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)],
               [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
@@ -97,15 +97,15 @@ export function registerActions(bot, generator, marketData, userSettings) {
       }
       
       await ctx.reply([
-        '❌ *No qualified setups found*',
+        '❌ <b>No qualified setups found</b>',
         '',
-        'Markets are consolidating or signals don\\\'t meet quality thresholds.',
+        'Markets are consolidating or signals don\'t meet quality thresholds.',
         '',
         'Try /signal for a broader scan, or enable auto-alerts.',
         '',
-        'Quality \\> Quantity\\. Patience pays\\.'
+        'Quality &gt; Quantity. Patience pays.'
       ].join('\n'), {
-        parse_mode: 'MarkdownV2',
+        parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('🔔 Auto-Alerts', 'ENABLE_ALERTS')],
           [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
@@ -181,14 +181,14 @@ export function registerActions(bot, generator, marketData, userSettings) {
       const settings = userSettings.get(ctx.from.id) || {};
       
       await ctx.reply([
-        '⚙️ *User Settings*',
+        '⚙️ <b>User Settings</b>',
         '',
         `Min Confidence: ${settings.minConfidence || 60}%`,
         `Notifications: ${settings.notifications !== false ? '✅ ON' : '❌ OFF'}`,
         '',
         'Adjust confidence threshold:'
       ].join('\n'), {
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('60% (Balanced)', 'SET_CONF_60')],
           [Markup.button.callback('70% (Conservative)', 'SET_CONF_70')],
@@ -226,8 +226,8 @@ export function registerActions(bot, generator, marketData, userSettings) {
   bot.action('MAIN_MENU', async (ctx) => {
     try {
       await safeAnswer(ctx);
-      await ctx.reply('🏠 *Main Menu*', {
-        parse_mode: 'Markdown',
+      await ctx.reply('🏠 <b>Main Menu</b>', {
+        parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
           [Markup.button.callback('📈 Stats', 'STATS'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
@@ -296,5 +296,5 @@ function isAdmin(ctx) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-  }
-  
+                      }
+        
