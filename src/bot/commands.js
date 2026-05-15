@@ -22,22 +22,22 @@ export function registerCommands(bot, generator, marketData) {
       botLogger.info(`User started: ${ctx.from.id}`);
       
       const welcome = [
-        '🎯 *SignalAlpha v3\\.0 — Institutional Signals*',
+        '🎯 <b>SignalAlpha v3.0 — Institutional Signals</b>',
         '',
-        'Real\\-time crypto futures analysis with multi\\-layer scoring\\.',
+        'Real-time crypto futures analysis with multi-layer scoring.',
         '',
-        '*Commands:*',
+        '<b>Commands:</b>',
         '📊 /dashboard — View challenge progress',
         '🎯 /signal — Get manual signal scan',
-        '🔥 /live — Start auto\\-scanning \\(admin\\)',
+        '🔥 /live — Start auto-scanning (admin)',
         '',
-        isReady() ? '✅ System ready' : '⏳ System initializing\\.\\.\\.',
+        isReady() ? '✅ System ready' : '⏳ System initializing...',
         '',
-        `🎁 [Trade on BingX](${escapeMarkdownV2(CONFIG.REFERRAL.LINK)}) | Code: \\${'`'}${escapeMarkdownV2(CONFIG.REFERRAL.CODE)}\\${'`'}`
+        `🎁 <a href="${escapeHtml(CONFIG.REFERRAL.LINK)}">Trade on BingX</a> | Code: <code>${escapeHtml(CONFIG.REFERRAL.CODE)}</code>`
       ].join('\n');
 
       await ctx.reply(welcome, {
-        parse_mode: 'MarkdownV2',
+        parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
           [
@@ -73,7 +73,7 @@ export function registerCommands(bot, generator, marketData) {
       ];
 
       await ctx.reply(text, {
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard(buttons)
       });
@@ -90,7 +90,7 @@ export function registerCommands(bot, generator, marketData) {
         return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
       }
 
-      await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'Markdown' });
+      await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'HTML' });
       
       const symbols = await marketData.getTopVolumeSymbols(15);
       let found = false;
@@ -99,7 +99,7 @@ export function registerCommands(bot, generator, marketData) {
         const signal = await generator.generateSignal(symbol);
         if (signal) {
           await ctx.reply(formatSignalMessage(signal), {
-            parse_mode: 'Markdown',
+            parse_mode: 'HTML',
             ...Markup.inlineKeyboard([
               [Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)],
               [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
@@ -113,15 +113,15 @@ export function registerCommands(bot, generator, marketData) {
       
       if (!found) {
         await ctx.reply([
-          '❌ *No qualified setups found*',
+          '❌ <b>No qualified setups found</b>',
           '',
-          'Markets are consolidating or signals don\\\'t meet quality thresholds.',
+          'Markets are consolidating or signals don\'t meet quality thresholds.',
           '',
-          'Try again in 15\\-30 minutes.',
+          'Try again in 15-30 minutes.',
           '',
-          'Quality \\> Quantity\\. Patience pays\\.'
+          'Quality &gt; Quantity. Patience pays.'
         ].join('\n'), {
-          parse_mode: 'MarkdownV2',
+          parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
             [Markup.button.callback('🔔 Auto-Alerts', 'ENABLE_ALERTS')],
             [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
@@ -200,16 +200,16 @@ export function registerCommands(bot, generator, marketData) {
       results.sort((a, b) => b.score - a.score);
       
       const text = [
-        '📊 *Diagnostic Results*',
+        '📊 <b>Diagnostic Results</b>',
         '',
         ...results.map(r => 
-          `${r.passed ? '✅' : '❌'} ${escapeMarkdownV2(r.symbol)}: ${r.score}% (${escapeMarkdownV2(r.tier)}) | ${escapeMarkdownV2(r.setup || 'No setup')} | R:R ${r.rr || 'N/A'}`
+          `${r.passed ? '✅' : '❌'} ${escapeHtml(r.symbol)}: ${r.score}% (${escapeHtml(r.tier)}) | ${escapeHtml(r.setup || 'No setup')} | R:R ${r.rr || 'N/A'}`
         ).slice(0, 10),
         '',
-        'Top 10 near\\-misses shown\\.'
+        'Top 10 near-misses shown. If all &lt;55%, markets are choppy.'
       ].join('\n');
       
-      await ctx.reply(text, { parse_mode: 'MarkdownV2' });
+      await ctx.reply(text, { parse_mode: 'HTML' });
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Error in /diagnose command');
       await ctx.reply('⚠️ Diagnostic scan failed.');
@@ -223,7 +223,7 @@ export function registerCommands(bot, generator, marketData) {
       const riskStatus = stats.riskStatus || {};
       
       await ctx.reply([
-        '📊 *System Statistics*',
+        '📊 <b>System Statistics</b>',
         '',
         `Signals Today: ${stats.signalsToday}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`,
         `Active Signals: ${stats.activeSignals}`,
@@ -237,7 +237,7 @@ export function registerCommands(bot, generator, marketData) {
         `Markets Tracked: ${marketData.perpetualMarkets?.length || 0}`,
         `Challenge Day: ${CONFIG.CHALLENGE.DAYS}`,
         `Capital: $${CONFIG.CHALLENGE.CURRENT_CAPITAL.toFixed(2)}`
-      ].join('\n'), { parse_mode: 'Markdown' });
+      ].join('\n'), { parse_mode: 'HTML' });
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Error in /stats command');
       await ctx.reply('⚠️ Failed to load statistics.');
@@ -260,29 +260,14 @@ function sleep(ms) {
 }
 
 /**
- * Escape special characters for Telegram MarkdownV2 parse mode
- * Prevents syntax errors when dynamic content contains reserved chars
+ * Escape HTML special characters to prevent XSS and broken parsing
  */
-function escapeMarkdownV2(text) {
+function escapeHtml(text) {
   if (typeof text !== 'string') return String(text);
   return text
-    .replace(/_/g, '\\_')
-    .replace(/\*/g, '\\*')
-    .replace(/\[/g, '\\[')
-    .replace(/]/g, '\\]')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)')
-    .replace(/~/g, '\\~')
-    .replace(/`/g, '\\`')
-    .replace(/>/g, '\\>')
-    .replace(/#/g, '\\#')
-    .replace(/\+/g, '\\+')
-    .replace(/-/g, '\\-')
-    .replace(/=/g, '\\=')
-    .replace(/\|/g, '\\|')
-    .replace(/\{/g, '\\{')
-    .replace(/\}/g, '\\}')
-    .replace(/\./g, '\\.')
-    .replace(/!/g, '\\!');
-                                               }
-                                 
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+                       }
+        
