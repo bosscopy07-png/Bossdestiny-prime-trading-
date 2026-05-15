@@ -24,16 +24,18 @@ export class SignalAlphaBot {
     this.marketData = new MarketDataEngine();
     this.generator = new SignalGenerator(this.marketData);
     this.userSettings = new Map();
+    this.handlersRegistered = false;
 
     this._setupMiddleware();
-    this._setupHandlers();
     this._setupEvents();
 
     botLogger.info('SignalAlphaBot constructed');
   }
 
+  /**
+   * Middleware: attach admin flag to context
+   */
   _setupMiddleware() {
-    // Admin check middleware
     this.bot.use(async (ctx, next) => {
       if (ctx.from) {
         ctx.isAdmin = CONFIG.ADMIN_IDS.includes(String(ctx.from.id));
@@ -42,23 +44,90 @@ export class SignalAlphaBot {
     });
   }
 
-  _setupHandlers() {
-    registerCommands(this.bot, this.generator, this.marketData);
-    registerActions(this.bot, this.generator, this.marketData, this.userSettings);
-  }
-
+  /**
+   * Wire generator events to Telegram notifications
+   */
   _setupEvents() {
-    // Signal events
     this.generator.on('signal', (signal) => this._handleNewSignal(signal));
     this.generator.on('signal_closed', (data) => this._handleSignalClose(data));
     this.generator.on('scanning_started', () => this._broadcastToAdmins('🔥 Live scanning activated'));
     this.generator.on('scanning_stopped', () => this._broadcastToAdmins('⏹️ Scanning stopped'));
   }
 
+  /**
+   * Register command/action handlers
+   * DEFERRED: Called AFTER market data is ready to prevent crashes
+   */
+  _registerHandlers() {
+    if (this.handlersRegistered) {
+      botLogger.warn('Handlers already registered, skipping');
+      return;
+    }
+
+    registerCommands(this.bot, this.generator, this.marketData);
+    registerActions(this.bot, this.generator, this.marketData, this.userSettings);
+    this.handlersRegistered = true;
+
+    botLogger.info('Bot handlers registered');
+  }
+
+  /**
+   * Main startup sequence
+   */
+  async start() {
+    botLogger.info('Starting SignalAlpha Bot...');
+    
+    try {
+      // Step 1: Initialize market data FIRST (blocks until ready)
+      botLogger.info('Step 1: Initializing market data...');
+      await this.marketData.initialize();
+      
+      if (!this.marketData.isRunning) {
+        throw new Error('MarketDataEngine failed to start');
+      }
+      
+      botLogger.info('Market data ready');
+      botLogger.info(`Markets: ${this.marketData.perpetualMarkets.length}`);
+      
+      // Step 2: Register handlers NOW that market data is ready
+      botLogger.info('Step 2: Registering bot handlers...');
+      this._registerHandlers();
+      
+      // Step 3: Launch bot
+      botLogger.info('Step 3: Launching Telegram bot...');
+      await this.bot.launch();
+      
+      // Step 4: Auto-start scanner if configured
+      if (process.env.AUTO_START_SCAN === 'true') {
+        botLogger.info('Auto-starting scanner in 10s...');
+        setTimeout(() => {
+          this.generator.startContinuousScanning().catch(err => {
+            botLogger.error('Auto-start scanner failed:', err);
+          });
+        }, 10000);
+      }
+      
+      botLogger.info('SignalAlpha v3.0 is LIVE!');
+      
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Startup failed');
+      throw err;
+    }
+    
+    // Graceful shutdown handlers
+    process.once('SIGINT', () => this.shutdown('SIGINT'));
+    process.once('SIGTERM', () => this.shutdown('SIGTERM'));
+  }
+
+  /**
+   * Handle new signal from generator — broadcast to admins
+   */
   async _handleNewSignal(signal) {
+    const text = formatSignalMessage(signal);
+    
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
-        await this.bot.telegram.sendMessage(adminId, formatSignalMessage(signal), {
+        await this.bot.telegram.sendMessage(adminId, text, {
           parse_mode: 'Markdown',
           disable_web_page_preview: true
         });
@@ -68,6 +137,9 @@ export class SignalAlphaBot {
     }
   }
 
+  /**
+   * Handle signal closure from generator — notify admins
+   */
   async _handleSignalClose(data) {
     const { signal, result, pnl, pnlPct } = data;
     
@@ -91,6 +163,9 @@ export class SignalAlphaBot {
     }
   }
 
+  /**
+   * Broadcast message to all admin IDs
+   */
   async _broadcastToAdmins(message) {
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
@@ -102,58 +177,28 @@ export class SignalAlphaBot {
   }
 
   /**
-   * Main startup sequence
-   * FIXED: Added missing shutdown method
-   */
-  async start() {
-    botLogger.info('Starting SignalAlpha Bot...');
-    
-    try {
-      // Step 1: Initialize market data
-      botLogger.info('Step 1: Initializing market data...');
-      await this.marketData.initialize();
-      
-      if (!this.marketData.isRunning) {
-        throw new Error('MarketDataEngine failed to start');
-      }
-      
-      botLogger.info('Market data ready');
-      botLogger.info(`Markets: ${this.marketData.perpetualMarkets.length}`);
-      
-      // Step 2: Launch bot
-      botLogger.info('Step 2: Launching Telegram bot...');
-      await this.bot.launch();
-      
-      // Step 3: Auto-start if configured
-      if (process.env.AUTO_START_SCAN === 'true') {
-        botLogger.info('Auto-starting scanner in 10s...');
-        setTimeout(() => {
-          this.generator.startContinuousScanning();
-        }, 10000);
-      }
-      
-      botLogger.info('SignalAlpha v3.0 is LIVE!');
-      
-    } catch (err) {
-      botLogger.error({ err: err.message }, 'Startup failed');
-      throw err;
-    }
-    
-    // Graceful shutdown handlers
-    process.once('SIGINT', () => this.shutdown('SIGINT'));
-    process.once('SIGTERM', () => this.shutdown('SIGTERM'));
-  }
-
-  /**
    * Graceful shutdown
-   * FIXED: Was referenced but never defined in original
    */
   shutdown(signal) {
     botLogger.info(`Shutting down (${signal})...`);
     
-    this.generator.stopScanning();
-    this.marketData.shutdown();
-    this.bot.stop(signal);
+    try {
+      this.generator.stopScanning();
+    } catch (err) {
+      botLogger.error('Error stopping generator:', err);
+    }
+
+    try {
+      this.marketData.shutdown();
+    } catch (err) {
+      botLogger.error('Error shutting down market data:', err);
+    }
+
+    try {
+      this.bot.stop(signal);
+    } catch (err) {
+      botLogger.error('Error stopping bot:', err);
+    }
     
     botLogger.info('Shutdown complete');
     process.exit(0);
