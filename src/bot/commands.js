@@ -7,7 +7,7 @@ import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
 import { formatDashboard } from '../signals/formatter.js';
-import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
+import { formatSignalMessage } from '../signals/formatter.js';
 
 /**
  * Register all bot commands
