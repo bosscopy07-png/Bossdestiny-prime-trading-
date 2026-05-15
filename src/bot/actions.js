@@ -13,166 +13,288 @@ import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
  */
 export function registerActions(bot, generator, marketData, userSettings) {
   
-  // Dashboard
-  bot.action('DASHBOARD', async (ctx) => {
-    await ctx.answerCbQuery();
-    const stats = generator.getStats();
-    const text = formatDashboard(stats, marketData, CONFIG.CHALLENGE);
-    const isAdmin = CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
-    
-    const buttons = isAdmin ? [
-      [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('🔥 Start Live', 'START_LIVE')],
-      [Markup.button.callback('⏹️ Stop Scan', 'STOP_SCAN'), Markup.button.callback('📊 Stats', 'STATS')],
-      [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-    ] : [
-      [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('📊 Stats', 'STATS')],
-      [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-    ];
+  // Helper: check if market data is ready for operations
+  const isReady = () => marketData?.isRunning === true && marketData?.exchange != null;
 
-    await ctx.editMessageText(text, {
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true,
-      ...Markup.inlineKeyboard(buttons)
-    }).catch(() => {
-      // If edit fails, send new message
-      ctx.reply(text, {
+  // Helper: safe callback query answer with error fallback
+  const safeAnswer = async (ctx, text = '') => {
+    try {
+      await ctx.answerCbQuery(text);
+    } catch (err) {
+      botLogger.debug(`answerCbQuery failed: ${err.message}`);
+    }
+  };
+
+  // ─── DASHBOARD ─────────────────────────────────────────────────
+
+  bot.action('DASHBOARD', async (ctx) => {
+    try {
+      if (!isReady()) {
+        await safeAnswer(ctx, '⏳ Initializing...');
+        return ctx.reply('⏳ System initializing, please wait...');
+      }
+
+      await safeAnswer(ctx);
+      
+      const stats = generator.getStats();
+      const text = formatDashboard(stats, marketData, CONFIG.CHALLENGE);
+      const isAdmin = CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
+      
+      const buttons = isAdmin ? [
+        [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('🔥 Start Live', 'START_LIVE')],
+        [Markup.button.callback('⏹️ Stop Scan', 'STOP_SCAN'), Markup.button.callback('📊 Stats', 'STATS')],
+        [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
+      ] : [
+        [Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL'), Markup.button.callback('📊 Stats', 'STATS')],
+        [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
+      ];
+
+      await ctx.editMessageText(text, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard(buttons)
+      }).catch(() => {
+        // If edit fails (e.g., message too old), send new message
+        ctx.reply(text, {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+          ...Markup.inlineKeyboard(buttons)
+        });
       });
-    });
+    } catch (err) {
+      botLogger.error('Error in DASHBOARD action:', err);
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to load dashboard. Please try again.');
+    }
   });
 
-  // Get Signal
+  // ─── GET SIGNAL ──────────────────────────────────────────────────
+
   bot.action('GET_SIGNAL', async (ctx) => {
-    await ctx.answerCbQuery('Scanning...');
-    await ctx.reply('🔍 Scanning top pairs for A-B+ setups...');
-    
-    const symbols = await marketData.getTopVolumeSymbols(10);
-    
-    for (const symbol of symbols.slice(0, 5)) {
-      const signal = await generator.generateSignal(symbol);
-      if (signal) {
-        await ctx.reply(formatSignalMessage(signal), {
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)],
-            [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
-          ])
-        });
+    try {
+      if (!isReady()) {
+        await safeAnswer(ctx, 'Not ready');
+        return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
+      }
+
+      await safeAnswer(ctx, '🔍 Scanning...');
+      await ctx.reply('🔍 Scanning top pairs for qualified setups...');
+      
+      const symbols = await marketData.getTopVolumeSymbols(10);
+      
+      for (const symbol of symbols.slice(0, 5)) {
+        const signal = await generator.generateSignal(symbol);
+        if (signal) {
+          await ctx.reply(formatSignalMessage(signal), {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)],
+              [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+            ])
+          });
+          return;
+        }
+        await sleep(1500);
+      }
+      
+      await ctx.reply([
+        '❌ *No qualified setups found*',
+        '',
+        'Markets are consolidating or signals don\\\'t meet quality thresholds.',
+        '',
+        'Try /signal for a broader scan, or enable auto-alerts.',
+        '',
+        'Quality \\> Quantity\\. Patience pays\\.'
+      ].join('\n'), {
+        parse_mode: 'MarkdownV2',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔔 Auto-Alerts', 'ENABLE_ALERTS')],
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+        ])
+      });
+    } catch (err) {
+      botLogger.error('Error in GET_SIGNAL action:', err);
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Signal scan failed. Please try again later.');
+    }
+  });
+
+  // ─── START LIVE (admin only) ───────────────────────────────────
+
+  bot.action('START_LIVE', async (ctx) => {
+    try {
+      if (!isAdmin(ctx)) {
+        await safeAnswer(ctx, '⛔ Admin only');
         return;
       }
-      await sleep(1500);
+
+      if (!isReady()) {
+        await safeAnswer(ctx, 'Not ready');
+        return ctx.reply('⏳ System not ready yet');
+      }
+
+      await safeAnswer(ctx, '🔥 Starting...');
+      await generator.startContinuousScanning();
+      await ctx.reply('🔥 Live scanning activated');
+    } catch (err) {
+      botLogger.error('Error in START_LIVE action:', err);
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to start scanning.');
     }
-    
-    await ctx.reply('❌ No qualified setups found. Try /signal for broader scan.');
   });
 
-  // Start Live (admin)
-  bot.action('START_LIVE', async (ctx) => {
-    if (!isAdmin(ctx)) {
-      await ctx.answerCbQuery('⛔ Admin only');
-      return;
-    }
-    await ctx.answerCbQuery('Starting...');
-    await generator.startContinuousScanning();
-    await ctx.reply('🔥 Live scanning activated');
-  });
+  // ─── STOP SCAN (admin only) ────────────────────────────────────
 
-  // Stop Scan (admin)
   bot.action('STOP_SCAN', async (ctx) => {
-    if (!isAdmin(ctx)) {
-      await ctx.answerCbQuery('⛔ Admin only');
-      return;
+    try {
+      if (!isAdmin(ctx)) {
+        await safeAnswer(ctx, '⛔ Admin only');
+        return;
+      }
+
+      await safeAnswer(ctx, '⏹️ Stopping...');
+      generator.stopScanning();
+      await ctx.reply('⏹️ Scanning stopped');
+    } catch (err) {
+      botLogger.error('Error in STOP_SCAN action:', err);
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to stop scanning.');
     }
-    await ctx.answerCbQuery('Stopping...');
-    generator.stopScanning();
-    await ctx.reply('⏹️ Scanning stopped');
   });
 
-  // Stats
+  // ─── STATS ───────────────────────────────────────────────────────
+
   bot.action('STATS', async (ctx) => {
-    await ctx.answerCbQuery();
-    await ctx.reply('Use /stats command for full statistics');
+    try {
+      await safeAnswer(ctx);
+      await ctx.reply('📊 Use /stats command for full statistics');
+    } catch (err) {
+      botLogger.error('Error in STATS action:', err);
+      await safeAnswer(ctx, 'Error');
+    }
   });
 
-  // Settings
+  // ─── SETTINGS ──────────────────────────────────────────────────
+
   bot.action('SETTINGS', async (ctx) => {
-    await ctx.answerCbQuery();
-    const settings = userSettings.get(ctx.from.id) || {};
-    
-    await ctx.reply([
-      '⚙️ *User Settings*',
-      '',
-      `Min Confidence: ${settings.minConfidence || 60}%`,
-      `Notifications: ${settings.notifications !== false ? '✅ ON' : '❌ OFF'}`,
-      '',
-      'Adjust confidence threshold:'
-    ].join('\n'), {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('60% (Balanced)', 'SET_CONF_60')],
-        [Markup.button.callback('70% (Conservative)', 'SET_CONF_70')],
-        [Markup.button.callback('80% (Strict)', 'SET_CONF_80')],
-        [Markup.button.callback('🔙 Back', 'MAIN_MENU')]
-      ])
-    });
+    try {
+      await safeAnswer(ctx);
+      const settings = userSettings.get(ctx.from.id) || {};
+      
+      await ctx.reply([
+        '⚙️ *User Settings*',
+        '',
+        `Min Confidence: ${settings.minConfidence || 60}%`,
+        `Notifications: ${settings.notifications !== false ? '✅ ON' : '❌ OFF'}`,
+        '',
+        'Adjust confidence threshold:'
+      ].join('\n'), {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('60% (Balanced)', 'SET_CONF_60')],
+          [Markup.button.callback('70% (Conservative)', 'SET_CONF_70')],
+          [Markup.button.callback('80% (Strict)', 'SET_CONF_80')],
+          [Markup.button.callback('🔙 Back', 'MAIN_MENU')]
+        ])
+      });
+    } catch (err) {
+      botLogger.error('Error in SETTINGS action:', err);
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to load settings.');
+    }
   });
 
-  // Confidence settings
+  // ─── CONFIDENCE SETTINGS ───────────────────────────────────────
+
   bot.action(/SET_CONF_(\d+)/, async (ctx) => {
-    const conf = parseInt(ctx.match[1]);
-    userSettings.set(ctx.from.id, { 
-      ...(userSettings.get(ctx.from.id) || {}),
-      minConfidence: conf 
-    });
-    await ctx.answerCbQuery(`Min confidence: ${conf}%`);
-    await ctx.reply(`✅ Minimum confidence set to ${conf}%`);
+    try {
+      const conf = parseInt(ctx.match[1]);
+      userSettings.set(ctx.from.id, { 
+        ...(userSettings.get(ctx.from.id) || {}),
+        minConfidence: conf 
+      });
+      await safeAnswer(ctx, `✅ ${conf}%`);
+      await ctx.reply(`✅ Minimum confidence set to ${conf}%`);
+    } catch (err) {
+      botLogger.error('Error in SET_CONF action:', err);
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to update settings.');
+    }
   });
 
-  // Main menu
+  // ─── MAIN MENU ───────────────────────────────────────────────────
+
   bot.action('MAIN_MENU', async (ctx) => {
-    await ctx.answerCbQuery();
-    await ctx.reply('🏠 *Main Menu*', {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
-        [Markup.button.callback('📈 Stats', 'STATS'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-      ])
-    });
+    try {
+      await safeAnswer(ctx);
+      await ctx.reply('🏠 *Main Menu*', {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
+          [Markup.button.callback('📈 Stats', 'STATS'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
+        ])
+      });
+    } catch (err) {
+      botLogger.error('Error in MAIN_MENU action:', err);
+      await safeAnswer(ctx, 'Error');
+    }
   });
 
-  // Signal taken/skipped
+  // ─── SIGNAL TAKEN ──────────────────────────────────────────────
+
   bot.action(/TAKEN_(.+)/, async (ctx) => {
-    const signalId = ctx.match[1];
-    await ctx.answerCbQuery('✅ Marked as taken');
-    await ctx.reply('📝 Signal marked as TAKEN. Trade with discipline!');
-    botLogger.info(`Signal ${signalId.slice(0, 8)} taken by ${ctx.from.id}`);
+    try {
+      const signalId = ctx.match[1];
+      await safeAnswer(ctx, '✅ Marked as taken');
+      await ctx.reply('📝 Signal marked as TAKEN. Trade with discipline!');
+      botLogger.info(`Signal ${signalId.slice(0, 8)} taken by ${ctx.from.id}`);
+    } catch (err) {
+      botLogger.error('Error in TAKEN action:', err);
+      await safeAnswer(ctx, 'Error');
+    }
   });
+
+  // ─── SIGNAL SKIPPED ─────────────────────────────────────────────
 
   bot.action(/SKIPPED_(.+)/, async (ctx) => {
-    const signalId = ctx.match[1];
-    await ctx.answerCbQuery('Skipped');
-    botLogger.info(`Signal ${signalId.slice(0, 8)} skipped by ${ctx.from.id}`);
+    try {
+      const signalId = ctx.match[1];
+      await safeAnswer(ctx, 'Skipped');
+      botLogger.info(`Signal ${signalId.slice(0, 8)} skipped by ${ctx.from.id}`);
+    } catch (err) {
+      botLogger.error('Error in SKIPPED action:', err);
+      await safeAnswer(ctx, 'Error');
+    }
   });
 
-  // Enable alerts
+  // ─── ENABLE ALERTS ─────────────────────────────────────────────
+
   bot.action('ENABLE_ALERTS', async (ctx) => {
-    await ctx.answerCbQuery();
-    userSettings.set(ctx.from.id, {
-      ...(userSettings.get(ctx.from.id) || {}),
-      notifications: true
-    });
-    await ctx.reply('🔔 Auto-alerts enabled. You will receive signals when they meet quality thresholds.');
+    try {
+      await safeAnswer(ctx);
+      userSettings.set(ctx.from.id, {
+        ...(userSettings.get(ctx.from.id) || {}),
+        notifications: true
+      });
+      await ctx.reply('🔔 Auto-alerts enabled. You will receive signals when they meet quality thresholds.');
+    } catch (err) {
+      botLogger.error('Error in ENABLE_ALERTS action:', err);
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to enable alerts.');
+    }
   });
 
   botLogger.info('Action handlers registered');
 }
+
+// ==========================================
+// HELPERS
+// ==========================================
 
 function isAdmin(ctx) {
   return CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
 }
 
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-      }
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
