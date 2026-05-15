@@ -13,8 +13,8 @@ import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
  */
 export function registerCommands(bot, generator, marketData) {
   
-  // Helper to check if system is ready
-  const isReady = () => marketData.isRunning && marketData.exchange;
+  // Helper: check if market data is ready for operations
+  const isReady = () => marketData?.isRunning === true && marketData?.exchange != null;
 
   // /start — Welcome
   bot.command('start', async (ctx) => {
@@ -47,7 +47,7 @@ export function registerCommands(bot, generator, marketData) {
         ])
       });
     } catch (err) {
-      botLogger.error('Error in /start command:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /start command');
       await ctx.reply('⚠️ An error occurred. Please try again later.');
     }
   });
@@ -78,7 +78,7 @@ export function registerCommands(bot, generator, marketData) {
         ...Markup.inlineKeyboard(buttons)
       });
     } catch (err) {
-      botLogger.error('Error in /dashboard command:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /dashboard command');
       await ctx.reply('⚠️ Failed to load dashboard. Please try again later.');
     }
   });
@@ -115,9 +115,9 @@ export function registerCommands(bot, generator, marketData) {
         await ctx.reply([
           '❌ *No qualified setups found*',
           '',
-          'Markets are consolidating or signals don\\\'t meet quality thresholds\\.',
+          'Markets are consolidating or signals don\\\'t meet quality thresholds.',
           '',
-          'Try again in 15\\-30 minutes\\.',
+          'Try again in 15\\-30 minutes.',
           '',
           'Quality \\> Quantity\\. Patience pays\\.'
         ].join('\n'), {
@@ -129,7 +129,7 @@ export function registerCommands(bot, generator, marketData) {
         });
       }
     } catch (err) {
-      botLogger.error('Error in /signal command:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /signal command');
       await ctx.reply('⚠️ Signal scan failed. Please try again later.');
     }
   });
@@ -148,7 +148,7 @@ export function registerCommands(bot, generator, marketData) {
       await ctx.reply('🔥 Starting live market scanning...');
       await generator.startContinuousScanning();
     } catch (err) {
-      botLogger.error('Error in /live command:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /live command');
       await ctx.reply('⚠️ Failed to start scanning.');
     }
   });
@@ -163,7 +163,7 @@ export function registerCommands(bot, generator, marketData) {
       generator.stopScanning();
       await ctx.reply('⏹️ Scanning stopped.');
     } catch (err) {
-      botLogger.error('Error in /stop command:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /stop command');
       await ctx.reply('⚠️ Failed to stop scanning.');
     }
   });
@@ -211,7 +211,7 @@ export function registerCommands(bot, generator, marketData) {
       
       await ctx.reply(text, { parse_mode: 'MarkdownV2' });
     } catch (err) {
-      botLogger.error('Error in /diagnose command:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /diagnose command');
       await ctx.reply('⚠️ Diagnostic scan failed.');
     }
   });
@@ -239,7 +239,7 @@ export function registerCommands(bot, generator, marketData) {
         `Capital: $${CONFIG.CHALLENGE.CURRENT_CAPITAL.toFixed(2)}`
       ].join('\n'), { parse_mode: 'Markdown' });
     } catch (err) {
-      botLogger.error('Error in /stats command:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /stats command');
       await ctx.reply('⚠️ Failed to load statistics.');
     }
   });
@@ -256,7 +256,7 @@ function isAdmin(ctx) {
 }
 
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -284,5 +284,5 @@ function escapeMarkdownV2(text) {
     .replace(/\}/g, '\\}')
     .replace(/\./g, '\\.')
     .replace(/!/g, '\\!');
-        }
-        
+                                               }
+                                 
