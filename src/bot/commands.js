@@ -7,6 +7,7 @@ import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
 import { formatDashboard } from '../signals/formatter.js';
+import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
 
 /**
  * Register all bot commands
@@ -213,5 +214,3 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// Import needed for signal formatting
-import { formatSignalMessage } from '../signals/formatter.js';
