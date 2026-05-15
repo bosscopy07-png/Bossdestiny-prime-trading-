@@ -102,7 +102,7 @@ export class SignalAlphaBot {
         botLogger.info('Auto-starting scanner in 10s...');
         setTimeout(() => {
           this.generator.startContinuousScanning().catch(err => {
-            botLogger.error('Auto-start scanner failed:', err);
+            botLogger.error({ err: err.message, stack: err.stack }, 'Auto-start scanner failed');
           });
         }, 10000);
       }
@@ -110,7 +110,7 @@ export class SignalAlphaBot {
       botLogger.info('SignalAlpha v3.0 is LIVE!');
       
     } catch (err) {
-      botLogger.error({ err: err.message }, 'Startup failed');
+      botLogger.error({ err: err.message, stack: err.stack }, 'Startup failed');
       throw err;
     }
     
@@ -132,7 +132,7 @@ export class SignalAlphaBot {
           disable_web_page_preview: true
         });
       } catch (err) {
-        botLogger.error(`Failed to notify admin ${adminId}: ${err.message}`);
+        botLogger.error({ err: err.message, adminId }, 'Failed to notify admin of new signal');
       }
     }
   }
@@ -158,7 +158,7 @@ export class SignalAlphaBot {
       try {
         await this.bot.telegram.sendMessage(adminId, text, { parse_mode: 'Markdown' });
       } catch (err) {
-        botLogger.error(`Failed to notify close to ${adminId}: ${err.message}`);
+        botLogger.error({ err: err.message, adminId }, 'Failed to notify admin of signal close');
       }
     }
   }
@@ -171,7 +171,7 @@ export class SignalAlphaBot {
       try {
         await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
       } catch (err) {
-        botLogger.error(`Broadcast failed to ${adminId}: ${err.message}`);
+        botLogger.error({ err: err.message, adminId }, 'Broadcast to admin failed');
       }
     }
   }
@@ -185,22 +185,22 @@ export class SignalAlphaBot {
     try {
       this.generator.stopScanning();
     } catch (err) {
-      botLogger.error('Error stopping generator:', err);
+      botLogger.error({ err: err.message }, 'Error stopping generator');
     }
 
     try {
       this.marketData.shutdown();
     } catch (err) {
-      botLogger.error('Error shutting down market data:', err);
+      botLogger.error({ err: err.message }, 'Error shutting down market data');
     }
 
     try {
       this.bot.stop(signal);
     } catch (err) {
-      botLogger.error('Error stopping bot:', err);
+      botLogger.error({ err: err.message }, 'Error stopping bot');
     }
     
     botLogger.info('Shutdown complete');
     process.exit(0);
   }
-      }
+}
