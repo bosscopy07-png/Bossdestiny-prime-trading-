@@ -21,7 +21,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
     try {
       await ctx.answerCbQuery(text);
     } catch (err) {
-      botLogger.debug(`answerCbQuery failed: ${err.message}`);
+      botLogger.debug({ err: err.message }, 'answerCbQuery failed');
     }
   };
 
@@ -54,7 +54,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard(buttons)
       }).catch(() => {
-        // If edit fails (e.g., message too old), send new message
         ctx.reply(text, {
           parse_mode: 'Markdown',
           disable_web_page_preview: true,
@@ -62,7 +61,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
         });
       });
     } catch (err) {
-      botLogger.error('Error in DASHBOARD action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in DASHBOARD action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to load dashboard. Please try again.');
     }
@@ -113,7 +112,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
         ])
       });
     } catch (err) {
-      botLogger.error('Error in GET_SIGNAL action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in GET_SIGNAL action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Signal scan failed. Please try again later.');
     }
@@ -137,7 +136,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await generator.startContinuousScanning();
       await ctx.reply('🔥 Live scanning activated');
     } catch (err) {
-      botLogger.error('Error in START_LIVE action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in START_LIVE action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to start scanning.');
     }
@@ -156,7 +155,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       generator.stopScanning();
       await ctx.reply('⏹️ Scanning stopped');
     } catch (err) {
-      botLogger.error('Error in STOP_SCAN action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in STOP_SCAN action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to stop scanning.');
     }
@@ -169,7 +168,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await safeAnswer(ctx);
       await ctx.reply('📊 Use /stats command for full statistics');
     } catch (err) {
-      botLogger.error('Error in STATS action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in STATS action');
       await safeAnswer(ctx, 'Error');
     }
   });
@@ -198,7 +197,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
         ])
       });
     } catch (err) {
-      botLogger.error('Error in SETTINGS action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in SETTINGS action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to load settings.');
     }
@@ -216,7 +215,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await safeAnswer(ctx, `✅ ${conf}%`);
       await ctx.reply(`✅ Minimum confidence set to ${conf}%`);
     } catch (err) {
-      botLogger.error('Error in SET_CONF action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in SET_CONF action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to update settings.');
     }
@@ -235,7 +234,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
         ])
       });
     } catch (err) {
-      botLogger.error('Error in MAIN_MENU action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in MAIN_MENU action');
       await safeAnswer(ctx, 'Error');
     }
   });
@@ -249,7 +248,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await ctx.reply('📝 Signal marked as TAKEN. Trade with discipline!');
       botLogger.info(`Signal ${signalId.slice(0, 8)} taken by ${ctx.from.id}`);
     } catch (err) {
-      botLogger.error('Error in TAKEN action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in TAKEN action');
       await safeAnswer(ctx, 'Error');
     }
   });
@@ -262,7 +261,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await safeAnswer(ctx, 'Skipped');
       botLogger.info(`Signal ${signalId.slice(0, 8)} skipped by ${ctx.from.id}`);
     } catch (err) {
-      botLogger.error('Error in SKIPPED action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in SKIPPED action');
       await safeAnswer(ctx, 'Error');
     }
   });
@@ -278,7 +277,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       });
       await ctx.reply('🔔 Auto-alerts enabled. You will receive signals when they meet quality thresholds.');
     } catch (err) {
-      botLogger.error('Error in ENABLE_ALERTS action:', err);
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in ENABLE_ALERTS action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to enable alerts.');
     }
@@ -297,4 +296,5 @@ function isAdmin(ctx) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
+  }
+  
