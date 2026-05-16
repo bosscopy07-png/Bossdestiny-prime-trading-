@@ -1,48 +1,74 @@
+
 // ==========================================
 // SIGNAL FORMATTER
 // Telegram message formatting — 2-Page HTML mode
-// VERSION: 3.3-community
+// VERSION: 4.0-fresh — Complete rewrite
 // ==========================================
 
-import { CONFIG } from '../config/index.js';
+// ─── CONFIG ────────────────────────────────────────────────
 
-// ─── HELPERS ───────────────────────────────────────────────
+const QUALITY_EMOJI = {
+  'A+': '🥇',
+  'A':  '🥈',
+  'A-': '🥈',
+  'B+': '🥉',
+  'B':  '📊',
+  'C+': '⚠️',
+  'C':  '🚫',
+  'D':  '⛔'
+};
 
-/**
- * Format price based on magnitude — prevents $0.0000 for sub-penny coins
- */
-function fmtPrice(p) {
-  if (p === undefined || p === null) return 'N/A';
-  const val = parseFloat(p);
-  if (isNaN(val)) return 'N/A';
-  if (val >= 10000) return val.toFixed(0);
-  if (val >= 1000) return val.toFixed(1);
-  if (val >= 100) return val.toFixed(2);
-  if (val >= 1) return val.toFixed(4);
-  if (val >= 0.01) return val.toFixed(6);
-  if (val >= 0.0001) return val.toFixed(8);
-  if (val >= 0.000001) return val.toFixed(10);
-  return val.toExponential(4);
+const DIRECTION_EMOJI = {
+  'LONG':  '🟢',
+  'SHORT': '🔴'
+};
+
+// ─── PRICE FORMATTER ───────────────────────────────────────
+
+function formatPrice(value) {
+  if (value === undefined || value === null) return 'N/A';
+  
+  const num = Number(value);
+  if (Number.isNaN(num)) return 'N/A';
+  if (num === 0) return '0';
+  
+  const abs = Math.abs(num);
+  
+  if (abs >= 100000) return num.toFixed(0);
+  if (abs >= 10000)  return num.toFixed(1);
+  if (abs >= 1000)   return num.toFixed(2);
+  if (abs >= 100)    return num.toFixed(2);
+  if (abs >= 10)     return num.toFixed(3);
+  if (abs >= 1)      return num.toFixed(4);
+  if (abs >= 0.1)    return num.toFixed(5);
+  if (abs >= 0.01)   return num.toFixed(6);
+  if (abs >= 0.001)  return num.toFixed(7);
+  if (abs >= 0.0001) return num.toFixed(8);
+  if (abs >= 0.00001)return num.toFixed(9);
+  
+  return num.toExponential(4);
 }
 
-/**
- * Clean symbol for display: PEPE/USDT:USDT → PEPE
- */
-function cleanSymbol(symbol) {
-  if (!symbol) return 'UNKNOWN';
-  return symbol
+// ─── SYMBOL CLEANER ────────────────────────────────────────
+
+function cleanSymbol(raw) {
+  if (!raw || typeof raw !== 'string') return 'UNKNOWN';
+  
+  return raw
     .replace(/:USDT$/, '')
     .replace(/:USD$/, '')
     .replace(/\/USDT$/, '')
-    .replace(/\/USD$/, '');
+    .replace(/\/USD$/, '')
+    .replace(/-PERP$/, '')
+    .replace(/_PERP$/, '');
 }
 
-/**
- * Escape HTML special characters for Telegram parse_mode: HTML
- */
-function escapeHtml(text) {
+// ─── HTML ESCAPER ──────────────────────────────────────────
+
+function html(text) {
   if (text === undefined || text === null) return '';
   if (typeof text !== 'string') return String(text);
+  
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -50,257 +76,393 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;');
 }
 
-/**
- * Progress bar string
- */
-function progressBar(pct) {
-  const filled = Math.max(0, Math.min(10, Math.round(parseFloat(pct || 0) / 10)));
+// ─── PROGRESS BAR ─────────────────────────────────────────
+
+function progressBar(percent) {
+  const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+  const filled = Math.round(pct / 10);
   return '█'.repeat(filled) + '░'.repeat(10 - filled);
 }
 
-// ─── PAGE 1: TRADE EXECUTION ───────────────────────────────
+// ─── RISK PERCENT CALCULATOR ──────────────────────────────
+
+function calcRiskPercent(entry, stop) {
+  const e = Number(entry);
+  const s = Number(stop);
+  if (!e || !s || e === 0) return '0.00';
+  
+  return ((Math.abs(s - e) / e) * 100).toFixed(2);
+}
+
+// ─── PAGE 1: TRADE EXECUTION ──────────────────────────────
 
 /**
- * Format Page 1: All info needed to place the trade
+ * Format signal Page 1 — Everything needed to place the trade
  */
-export function formatSignalPage1(signal) {
-  const displaySymbol = signal.displaySymbol || cleanSymbol(signal.symbol);
-  const qualityEmoji = { 
-    'A+': '🥇', 'A': '🥈', 'A-': '🥈', 
-    'B+': '🥉', 'B': '📊', 
-    'C+': '⚠️', 'C': '🚫', 'D': '⛔' 
-  };
-  const emoji = qualityEmoji[signal.quality] || '📊';
+export function formatPage1(signal) {
+  const sym = cleanSymbol(signal?.symbol);
+  const fullSym = html(signal?.symbol || 'UNKNOWN');
+  const emoji = QUALITY_EMOJI[signal?.quality] || '📊';
+  const dirEmoji = DIRECTION_EMOJI[signal?.direction] || '⚪';
+  const dir = signal?.direction || '?';
+  
+  const entry = signal?.entry?.price || 0;
+  const stop = signal?.stopLoss || 0;
+  const tp1 = signal?.takeProfit || 0;
+  const tp2 = signal?.takeProfit2;
+  
+  const riskPct = signal?.position?.riskPct || 0;
+  const riskAmt = signal?.position?.riskAmount || '0.00';
+  const leverage = signal?.position?.leverage || 1;
+  const baseQty = signal?.position?.baseQty || '0';
+  const notional = signal?.position?.notionalValue || '0.00';
+  const margin = signal?.position?.margin || '0.00';
+  const estProfit = signal?.position?.estProfit || '0.00';
+  const estLoss = signal?.position?.estLoss || '0.00';
+  
+  const confidence = signal?.confidence?.score || 0;
+  const tier = signal?.confidence?.tier || '?';
+  const rr = signal?.riskReward || '?';
+  const quality = signal?.quality || '?';
+  const strategy = signal?.strategy || '?';
+  
+  const rec = signal?.confidence?.recommendation || 'No recommendation';
+  const maxHold = signal?.execution?.maxHold || '4-8 hours';
+  const sigId = (signal?.id || '').substring(0, 8);
   
   const lines = [
     `╔══════════════════════════════════════════════════════════════╗`,
     `║     ${emoji} SIGNALALPHA CRYPTO SIGNAL ${emoji}     ║`,
-    `║           [$${signal.challenge?.startCapital || '10'} → $${signal.challenge?.target || '100'} Challenge]              ║`,
+    `║           [$10 → $100 Challenge]              ║`,
     `╚══════════════════════════════════════════════════════════════╝`,
     '',
-    '📋 <b>SETUP DETAILS</b>',
-    `Strategy: <b>${escapeHtml(signal.strategy)}</b> [${escapeHtml(signal.quality)}]`,
-    `Pair: <b>${escapeHtml(displaySymbol)}</b>`,
-    `Direction: ${signal.direction === 'LONG' ? '🟢 <b>LONG</b>' : '🔴 <b>SHORT</b>'}`,
-    `Confidence: <b>${signal.confidence?.score || 0}%</b> (${escapeHtml(signal.confidence?.tier || '?')})`,
-    `Risk/Reward: <b>1:${signal.riskReward || '?'}</b>`,
+    '📋 <b>SETUP</b>',
+    `Pair: <b>${html(sym)}</b> <code>${fullSym}</code>`,
+    `Strategy: <b>${html(strategy)}</b> [${html(quality)}]`,
+    `Direction: ${dirEmoji} <b>${dir}</b>`,
+    `Confidence: <b>${confidence}%</b> (${html(tier)})`,
+    `R:R: <b>1:${html(rr)}</b>`,
     '',
     '━━━━━━━━━━━━━━━━━━━━━━',
     '💰 <b>ENTRY &amp; EXITS</b>',
     '',
     `<b>Entry Zone:</b>`,
-    `$${fmtPrice(signal.entry?.zone?.min)} — $${fmtPrice(signal.entry?.zone?.max)}`,
+    `$${formatPrice(signal?.entry?.zone?.min)} — $${formatPrice(signal?.entry?.zone?.max)}`,
     '',
-    `<b>Stop Loss:</b> $${fmtPrice(signal.stopLoss)}`,
-    `<i>${((Math.abs((signal.stopLoss || 0) - (signal.entry?.price || 0)) / (signal.entry?.price || 1)) * 100).toFixed(2)}% risk</i>`,
+    `<b>Stop Loss:</b> $${formatPrice(stop)}`,
+    `<i>${calcRiskPercent(entry, stop)}% risk from entry</i>`,
     '',
-    `<b>Target 1:</b> $${fmtPrice(signal.takeProfit)}`,
+    `<b>Target 1:</b> $${formatPrice(tp1)}`,
   ];
-
-  if (signal.takeProfit2) {
-    lines.push(`<<b>Target 2:</b> $${fmtPrice(signal.takeProfit2)}`);
+  
+  if (tp2) {
+    lines.push(`<<b>Target 2:</b> $${formatPrice(tp2)}`);
   }
-
+  
   lines.push(
     '',
     '━━━━━━━━━━━━━━━━━━━━━━',
-    '⚙️ <b>POSITION SIZE</b>',
+    '⚙️ <b>POSITION</b>',
     '',
-    `<b>Risk:</b> ${signal.position?.riskPct || 0}% ($${signal.position?.riskAmount || '0.00'})`,
-    `<b>Leverage:</b> ${signal.position?.leverage || 1}x`,
-    `<b>Size:</b> <code>${signal.position?.baseQty || '0'}</code> ${escapeHtml(displaySymbol)}`,
-    `<b>Notional:</b> $${signal.position?.notionalValue || '0.00'}`,
-    `<b>Margin:</b> $${signal.position?.margin || '0.00'}`,
+    `<b>Risk:</b> ${riskPct}% ($${html(riskAmt)})`,
+    `<b>Leverage:</b> ${leverage}x`,
+    `<b>Size:</b> <code>${html(baseQty)}</code> ${html(sym)}`,
+    `<b>Notional:</b> $${html(notional)}`,
+    `<b>Margin:</b> $${html(margin)}`,
     '',
-    `<b>Est. Profit:</b> $${signal.position?.estProfit || '0.00'}`,
-    `<b>Est. Loss:</b> $${signal.position?.estLoss || '0.00'}`,
-    '',
-    '━━━━━━━━━━━━━━━━━━━━━━',
-    '🎯 <b>EXECUTION PLAN</b>',
-    ...(signal.execution?.steps || []).map((step, i) => `${i + 1}. ${escapeHtml(step)}`),
-    '',
-    signal.execution?.scalePrice ? `💡 <b>Scale 50% at:</b> $${escapeHtml(signal.execution.scalePrice)}` : '',
-    signal.execution?.warning ? `⚠️ <b>WARNING:</b> ${escapeHtml(signal.execution.warning)}` : '',
-    '',
-    `⏰ <b>Max Hold:</b> ${escapeHtml(signal.execution?.maxHold || '4-8 hours')}`,
+    `<b>Est. Profit:</b> $${html(estProfit)}`,
+    `<b>Est. Loss:</b> $${html(estLoss)}`,
     '',
     '━━━━━━━━━━━━━━━━━━━━━━',
-    `⚡ <b>${escapeHtml(signal.confidence?.recommendation || 'No recommendation')}</b>`,
-    '',
-    `🆔 Signal ID: <code>${(signal.id || 'unknown').substr(0, 8)}</code>`,
-    '',
-    '📄 <i>Page 1 of 2 — Tap ▶️ Analysis for full breakdown</i>',
+    '🎯 <b>PLAN</b>',
   );
-
-  return lines.filter(Boolean).join('\n');
+  
+  const steps = signal?.execution?.steps || [];
+  for (let i = 0; i < steps.length; i++) {
+    lines.push(`${i + 1}. ${html(steps[i])}`);
+  }
+  
+  const scale = signal?.execution?.scalePrice;
+  if (scale) {
+    lines.push(`💡 <b>Scale 50%:</b> $${html(scale)}`);
+  }
+  
+  const warning = signal?.execution?.warning;
+  if (warning) {
+    lines.push(`⚠️ <b>${html(warning)}</b>`);
+  }
+  
+  lines.push(
+    '',
+    `⏰ <b>Max Hold:</b> ${html(maxHold)}`,
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━',
+    `⚡ <b>${html(rec)}</b>`,
+    '',
+    `🆔 <code>${html(sigId)}</code>`,
+    '',
+    '📄 <i>Page 1 of 2 — Tap ▶️ for technical analysis</i>'
+  );
+  
+  return lines.join('\n');
 }
 
-// ─── PAGE 2: ANALYSIS & CONTEXT ────────────────────────────
+// ─── PAGE 2: TECHNICAL ANALYSIS ───────────────────────────
 
 /**
- * Format Page 2: Technical analysis and context
+ * Format signal Page 2 — Technical breakdown and context
  */
-export function formatSignalPage2(signal) {
-  const displaySymbol = signal.displaySymbol || cleanSymbol(signal.symbol);
-  const a = signal.analysis || {};
+export function formatPage2(signal) {
+  const sym = cleanSymbol(signal?.symbol);
+  const a = signal?.analysis || {};
+  
+  const trend = a.trend || '?';
+  const strength = a.trendStrength || 0;
+  const alignment = a.trendAlignment || 'single';
+  const rsi = a.rsi || '?';
+  const rsiCond = a.rsiCondition || '?';
+  const macdTrend = a.macdTrend || '?';
+  const macdCross = a.macdCrossover || 'none';
+  const volRatio = a.volumeRatio || '1.00';
+  const volTrend = a.volumeTrend || 'normal';
+  const atr = a.atr || 'N/A';
+  const support = a.support || 'N/A';
+  const resistance = a.resistance || 'N/A';
+  const sTouches = a.supportTouches || 0;
+  const rTouches = a.resistanceTouches || 0;
+  const structure = a.structure || '?';
+  
+  const progress = signal?.challenge?.progress || 0;
+  const current = signal?.challenge?.currentCapital || '0.00';
+  const target = signal?.challenge?.target || '100';
+  const start = signal?.challenge?.startCapital || '10';
+  const daysLeft = signal?.challenge?.daysLeft || '?';
+  
+  const sigId = (signal?.id || '').substring(0, 8);
   
   const lines = [
     `╔══════════════════════════════════════════════════════════════╗`,
-    `║     📊 ${escapeHtml(displaySymbol)} TECHNICAL ANALYSIS     ║`,
+    `║     📊 ${html(sym)} TECHNICALS     ║`,
     `╚══════════════════════════════════════════════════════════════╝`,
     '',
-    '📈 <b>TREND ANALYSIS</b>',
+    '📈 <b>TREND</b>',
     '',
-    `Direction: <b>${escapeHtml(a.trend || '?')}</b> (${a.trendStrength || 0}% strength)`,
-    `Alignment: ${a.trendAlignment === 'aligned' ? '✅ <b>Multi-TF Aligned</b>' : '⚠️ <b>Single TF Only</b>'}`,
+    `Direction: <b>${html(trend)}</b> (${strength}% strength)`,
+    `Alignment: ${alignment === 'aligned' ? '✅ <b>Multi-TF</b>' : '⚠️ <b>Single TF</b>'}`,
     '',
     '━━━━━━━━━━━━━━━━━━━━━━',
     '⚡ <b>MOMENTUM</b>',
     '',
-    `RSI: <b>${a.rsi || '?'}</b> (${escapeHtml(a.rsiCondition || '?')})`,
-    `MACD: <b>${escapeHtml(a.macdTrend || '?')}</b> (${escapeHtml(a.macdCrossover || 'none')})`,
+    `RSI: <b>${html(rsi)}</b> (${html(rsiCond)})`,
+    `MACD: <b>${html(macdTrend)}</b> (${html(macdCross)})`,
     '',
     '━━━━━━━━━━━━━━━━━━━━━━',
     '📊 <b>VOLUME &amp; STRUCTURE</b>',
     '',
-    `Volume Ratio: <b>${a.volumeRatio || '1.00'}x</b> average`,
-    `Volume Trend: ${escapeHtml(a.volumeTrend || 'normal')}`,
-    `ATR: <b>${escapeHtml(a.atr || 'N/A')}</b>`,
+    `Volume: <b>${html(volRatio)}x</b> avg (${html(volTrend)})`,
+    `ATR: <b>${html(atr)}</b>`,
     '',
-    `Support: $${escapeHtml(a.support)} <i>(${a.supportTouches || 0} touches)</i>`,
-    `Resistance: $${escapeHtml(a.resistance)} <i>(${a.resistanceTouches || 0} touches)</i>`,
-    `Structure: ${escapeHtml(a.structure || '?')}`,
-    '',
-    '━━━━━━━━━━━━━━━━━━━━━━',
-    '📈 <b>CHALLENGE TRACKER</b>',
-    '',
-    `Progress: ${signal.challenge?.progress || 0}%`,
-    `${progressBar(signal.challenge?.progress)}`,
-    '',
-    `Start: $${signal.challenge?.startCapital || '0.00'}`,
-    `Current: <b>$${signal.challenge?.currentCapital || '0.00'}</b>`,
-    `Target: $${signal.challenge?.target || '100'}`,
-    `Days Left: ${signal.challenge?.daysLeft || '?'}`,
+    `Support: $${html(support)} <i>(${sTouches} touches)</i>`,
+    `Resistance: $${html(resistance)} <i>(${rTouches} touches)</i>`,
+    `Structure: ${html(structure)}`,
     '',
     '━━━━━━━━━━━━━━━━━━━━━━',
-    '🔗 <b>TRADE NOW</b>',
+    '📈 <b>CHALLENGE</b>',
     '',
-    `🎁 <a href="${escapeHtml(CONFIG?.REFERRAL?.LINK || '#')}">Open ${escapeHtml(displaySymbol)} on BingX</a>`,
-    `🎁 Code: <code>${escapeHtml(CONFIG?.REFERRAL?.CODE || 'NONE')}</code>`,
+    `Progress: ${progress}%`,
+    `${progressBar(progress)}`,
     '',
-    `🆔 Signal ID: <code>${(signal.id || 'unknown').substr(0, 8)}</code>`,
+    `Start: $${html(start)}`,
+    `Current: <b>$${html(current)}</b>`,
+    `Target: $${html(target)}`,
+    `Days: ${html(daysLeft)}`,
     '',
-    '📄 <i>Page 2 of 2 — Tap ◀️ Trade for entry details</i>',
+    '━━━━━━━━━━━━━━━━━━━━━━',
+    '🔗 <b>LINKS</b>',
+    '',
+    '📊 <a href="https://www.tradingview.com/chart/?symbol=' + encodeURIComponent(signal?.symbol || '') + '">View Chart</a>',
+    '⚡ <a href="https://bingx.com">Trade Now</a>',
+    '',
+    `🆔 <code>${html(sigId)}</code>`,
+    '',
+    '📄 <i>Page 2 of 2 — Tap ◀️ for trade details</i>'
   ];
-
-  return lines.filter(Boolean).join('\n');
+  
+  return lines.join('\n');
 }
 
-// ─── SIGNAL CLOSED MESSAGE ─────────────────────────────────
+// ─── SIGNAL CLOSED ─────────────────────────────────────────
 
 /**
- * Format signal closure/result message
+ * Format signal closure message
  */
-export function formatCloseMessage(signal, result, exitPrice, pnl, pnlPct) {
-  const displaySymbol = signal.displaySymbol || cleanSymbol(signal.symbol);
-  const isWin = result.includes('take_profit');
+export function formatClosed(signal, result, exitPrice, pnl, pnlPct) {
+  const sym = cleanSymbol(signal?.symbol);
+  const isWin = String(result).includes('take_profit');
   const isTP2 = result === 'take_profit_2';
-  const emoji = isTP2 ? '🏆' : isWin ? '✅' : result.includes('stop_loss') ? '❌' : '⏰';
+  const isSL = result === 'stop_loss';
   
-  const resultText = {
-    'take_profit_2': 'TAKE PROFIT 2 🏆',
-    'take_profit': 'TAKE PROFIT 1 ✅',
-    'stop_loss': 'STOP LOSS ❌',
-    'time_expired': 'TIME EXPIRED ⏰',
-  }[result] || result.toUpperCase();
-
+  const emoji = isTP2 ? '🏆' : isWin ? '✅' : isSL ? '❌' : '⏰';
+  
+  const resultLabels = {
+    'take_profit_2': 'TAKE PROFIT 2',
+    'take_profit':   'TAKE PROFIT 1',
+    'stop_loss':     'STOP LOSS',
+    'time_expired':  'TIME EXPIRED'
+  };
+  const resultText = resultLabels[String(result)] || String(result).toUpperCase();
+  
+  const pnlNum = Number(pnl) || 0;
+  const pnlPctNum = Number(pnlPct) || 0;
+  const sign = pnlNum >= 0 ? '+' : '';
+  
+  const current = signal?.challenge?.currentCapital || '0.00';
+  const progress = signal?.challenge?.progress || 0;
+  
   const lines = [
     `╔══════════════════════════════════════════════════════════════╗`,
     `║     ${emoji} SIGNAL CLOSED ${emoji}     ║`,
     `╚══════════════════════════════════════════════════════════════╝`,
     '',
-    `<b>${escapeHtml(displaySymbol)} ${signal.direction}</b>`,
+    `<b>${html(sym)} ${signal?.direction || '?'}</b>`,
     '',
-    `Result: <b>${resultText}</b>`,
-    `Exit Price: $${fmtPrice(exitPrice)}`,
+    `Result: <b>${html(resultText)}</b>`,
+    `Exit: $${formatPrice(exitPrice)}`,
     '',
-    `P&amp;L: <b>$${Math.abs(pnl || 0).toFixed(2)}</b> (${pnlPct > 0 ? '+' : ''}${(pnlPct || 0).toFixed(2)}%)`,
+    `P&amp;L: <b>$${Math.abs(pnlNum).toFixed(2)}</b> (${sign}${pnlPctNum.toFixed(2)}%)`,
     '',
     '━━━━━━━━━━━━━━━━━━━━━━',
-    `Updated Capital: <b>$${(signal.challenge?.currentCapital || 0)}</b>`,
-    `Progress: ${signal.challenge?.progress || 0}% ${progressBar(signal.challenge?.progress)}`,
+    `Capital: <b>$${html(current)}</b>`,
+    `Progress: ${progress}% ${progressBar(progress)}`,
     '',
-    `🆔 Signal ID: <code>${(signal.id || '').substr(0, 8)}</code>`,
+    `🆔 <code>${html((signal?.id || '').substring(0, 8))}</code>`
   ];
-
-  return lines.filter(Boolean).join('\n');
+  
+  return lines.join('\n');
 }
 
-// ─── DASHBOARD MESSAGE ─────────────────────────────────────
+// ─── DASHBOARD ─────────────────────────────────────────────
 
 /**
- * Format system dashboard/status message
+ * Format system dashboard
  */
 export function formatDashboard(stats, marketData, challenge) {
-  const current = challenge?.CURRENT_CAPITAL || 0;
-  const start = challenge?.START_CAPITAL || 10;
-  const target = challenge?.TARGET || 100;
+  const current = Number(challenge?.CURRENT_CAPITAL) || 0;
+  const start = Number(challenge?.START_CAPITAL) || 10;
+  const target = Number(challenge?.TARGET) || 100;
   const progress = ((current - start) / (target - start)) * 100;
-
-  return [
+  
+  const isScanning = stats?.isScanning || false;
+  const signalsToday = stats?.signalsToday || 0;
+  const maxSignals = 5;
+  const active = stats?.activeSignals || 0;
+  const markets = marketData?.perpetualMarkets?.length || 0;
+  const lastScan = stats?.lastScan;
+  
+  const riskStatus = stats?.riskStatus || {};
+  const cooldown = riskStatus.cooldownLevel || 0;
+  
+  const lines = [
     '🎯 <b>SIGNALALPHA DASHBOARD</b>',
     '',
     `💰 Capital: $${current.toFixed(2)} / $${target}`,
     `📈 Progress: ${Math.max(0, progress).toFixed(1)}% ${progressBar(progress)}`,
-    `📅 Challenge: Day 1/${challenge?.DAYS || 30}`,
     '',
-    '<b>System Status:</b>',
-    `🔍 Scanning: ${stats?.isScanning ? '🟢 ACTIVE' : '⚪ IDLE'}`,
-    `📊 Markets: ${marketData?.perpetualMarkets?.length || 0} tracked`,
-    `🎯 Signals Today: ${stats?.signalsToday || 0}/${CONFIG?.RISK?.MAX_SIGNALS_PER_DAY || 5}`,
-    `⏱️ Last Scan: ${stats?.lastScan ? new Date(stats.lastScan).toLocaleTimeString() : 'Never'}`,
+    '━━━━━━━━━━━━━━━━━━━━━━',
+    '<b>STATUS</b>',
     '',
-    '<b>Risk Limits:</b>',
-    `Daily Loss: ${CONFIG?.RISK?.DAILY_LOSS_LIMIT_PCT || 5}% ($${(start * (CONFIG?.RISK?.DAILY_LOSS_LIMIT_PCT || 5) / 100).toFixed(2)})`,
-    `Max Consecutive Losses: ${CONFIG?.RISK?.MAX_CONSECUTIVE_LOSSES || 3}`,
-    `Active Signals: ${stats?.activeSignals || 0}`,
-    `Cooldown: ${stats?.riskStatus?.cooldownLevel > 0 ? `🔴 LEVEL ${stats.riskStatus.cooldownLevel}` : '🟢 Inactive'}`,
+    `Scanning: ${isScanning ? '🟢 ACTIVE' : '⚪ IDLE'}`,
+    `Markets: ${markets} tracked`,
+    `Signals Today: ${signalsToday}/${maxSignals}`,
+    `Active: ${active}`,
+    `Cooldown: ${cooldown > 0 ? `🔴 Level ${cooldown}` : '🟢 Clear'}`,
     '',
-    `🎁 <a href="${escapeHtml(CONFIG?.REFERRAL?.LINK || '#')}">Trade on BingX</a> | Code: <code>${escapeHtml(CONFIG?.REFERRAL?.CODE || 'NONE')}</code>`
-  ].join('\n');
+    lastScan ? `Last Scan: ${new Date(lastScan).toLocaleTimeString()}` : 'Last Scan: Never',
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━',
+    '🎁 <a href="https://bingx.com">Trade on BingX</a>'
+  ];
+  
+  return lines.join('\n');
 }
 
-// ─── TELEGRAM BUTTONS ───────────────────────────────────────
+// ─── BUTTON GENERATORS ─────────────────────────────────────
 
 /**
- * Get inline keyboard buttons for 2-page navigation
+ * Get buttons for active signal (2-page navigation)
  */
-export function getSignalButtons(signal) {
+export function getSignalButtons(signalId) {
   return {
     inline_keyboard: [
       [
-        { text: '◀️ Trade Details', callback_data: `signal_page1_${signal.id}` },
-        { text: '▶️ Analysis', callback_data: `signal_page2_${signal.id}` },
+        { text: '◀️ Trade', callback_data: `PAGE1_${signalId}` },
+        { text: '▶️ Analysis', callback_data: `PAGE2_${signalId}` }
       ],
       [
-        { text: '📊 Chart', url: `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(signal.symbol || '')}` },
-        { text: '⚡ Trade Now', url: CONFIG?.REFERRAL?.LINK || '#' },
+        { text: '✅ Taking', callback_data: `TAKEN_${signalId}` },
+        { text: '❌ Skip', callback_data: `SKIPPED_${signalId}` }
       ],
-    ],
+      [
+        { text: '📊 Dashboard', callback_data: 'DASHBOARD' }
+      ]
+    ]
   };
 }
 
 /**
- * Get buttons for closed signal (no navigation needed)
+ * Get buttons for closed signal
  */
-export function getCloseButtons(signal) {
+export function getCloseButtons() {
   return {
     inline_keyboard: [
       [
-        { text: '📊 View Chart', url: `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(signal.symbol || '')}` },
-        { text: '⚡ New Trade', url: CONFIG?.REFERRAL?.LINK || '#' },
-      ],
-    ],
+        { text: '📊 Dashboard', callback_data: 'DASHBOARD' },
+        { text: '🎯 New Signal', callback_data: 'GET_SIGNAL' }
+      ]
+    ]
   };
-    }
-    
+}
+
+// ─── TELEGRAF MARKUP VERSIONS ─────────────────────────────
+
+/**
+ * Telegraf Markup version for Page 1
+ */
+export function getPage1Markup(signalId) {
+  // Dynamic import to avoid hard dependency
+  try {
+    const { Markup } = require('telegraf');
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback('◀️ Trade', `PAGE1_${signalId}`),
+        Markup.button.callback('▶️ Analysis', `PAGE2_${signalId}`)
+      ],
+      [
+        Markup.button.callback('✅ Taking', `TAKEN_${signalId}`),
+        Markup.button.callback('❌ Skip', `SKIPPED_${signalId}`)
+      ],
+      [
+        Markup.button.callback('📊 Dashboard', 'DASHBOARD')
+      ]
+    ]);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Telegraf Markup version for closed signal
+ */
+export function getCloseMarkup() {
+  try {
+    const { Markup } = require('telegraf');
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
+        Markup.button.callback('🎯 New Signal', 'GET_SIGNAL')
+      ]
+    ]);
+  } catch {
+    return undefined;
+  }
+}
