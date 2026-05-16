@@ -1,3 +1,4 @@
+
 // ==========================================
 // REAL-TIME SIGNAL GENERATOR
 // Orchestrates analysis, scoring, and signal creation
@@ -47,13 +48,13 @@ export class SignalGenerator extends EventEmitter {
     };
     
     this._todayKey = getTodayKey();
-    this._recentScans = new Map(); // Track recently scanned symbols
+    this._recentScans = new Map();
     
     signalLogger.info('SignalGenerator initialized');
   }
 
   /**
-   * Analyze a single symbol across timeframes — with strict timeouts
+   * Analyze a single symbol across timeframes — with strict timeouts and full trace logging
    */
   async analyzeSymbol(symbol, force = false) {
     if (!symbol) {
@@ -61,62 +62,80 @@ export class SignalGenerator extends EventEmitter {
       return null;
     }
 
-    signalLogger.info(`Analyzing ${symbol}...`);
+    signalLogger.info(`=== START: ${symbol} ===`);
 
     const normalizedSymbol = this.marketData.normalizeSymbol(symbol);
     if (!normalizedSymbol) {
-      signalLogger.warn(`Cannot normalize: ${symbol}`);
+      signalLogger.info(`FAIL: normalizeSymbol returned null`);
       return null;
     }
+    signalLogger.info(`Normalized: ${normalizedSymbol}`);
 
     try {
       // Fetch 15m with 8s timeout
+      signalLogger.info(`[${normalizedSymbol}] Fetching 15m OHLCV...`);
       const m15 = await withTimeout(
         this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100),
         8000,
         `OHLCV 15m ${normalizedSymbol}`
       );
-      await sleep(200);
+      signalLogger.info(`[${normalizedSymbol}] 15m result: ${m15 ? m15.length + ' candles' : 'NULL'}`);
       
+      if (!m15 || m15.length < 20) {
+        signalLogger.info(`[${normalizedSymbol}] FAIL: 15m insufficient data (${m15 ? m15.length : 0} candles, need 20)`);
+        return null;
+      }
+      
+      await sleep(200);
+
       // Fetch 1h with 8s timeout
+      signalLogger.info(`[${normalizedSymbol}] Fetching 1h OHLCV...`);
       const h1 = await withTimeout(
         this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80),
         8000,
         `OHLCV 1h ${normalizedSymbol}`
       );
+      signalLogger.info(`[${normalizedSymbol}] 1h result: ${h1 ? h1.length + ' candles' : 'NULL'}`);
       
-      // Optional timeframes — 5s timeout, don't fail if missing
+      if (!h1 || h1.length < 10) {
+        signalLogger.info(`[${normalizedSymbol}] FAIL: 1h insufficient data (${h1 ? h1.length : 0} candles, need 10)`);
+        return null;
+      }
+      
+      await sleep(200);
+
+      // Optional 5m
       let m5 = null;
-      let h4 = null;
-      
       try {
-        await sleep(200);
+        signalLogger.info(`[${normalizedSymbol}] Fetching 5m OHLCV (optional)...`);
         m5 = await withTimeout(
           this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100),
           5000,
           `OHLCV 5m ${normalizedSymbol}`
         );
+        signalLogger.info(`[${normalizedSymbol}] 5m result: ${m5 ? m5.length + ' candles' : 'NULL'}`);
       } catch (e) {
-        signalLogger.debug(`5m fetch failed: ${e.message}`);
+        signalLogger.info(`[${normalizedSymbol}] 5m fetch failed (optional): ${e.message}`);
       }
       
+      await sleep(200);
+
+      // Optional 4h
+      let h4 = null;
       try {
-        await sleep(200);
+        signalLogger.info(`[${normalizedSymbol}] Fetching 4h OHLCV (optional)...`);
         h4 = await withTimeout(
           this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50),
           5000,
           `OHLCV 4h ${normalizedSymbol}`
         );
+        signalLogger.info(`[${normalizedSymbol}] 4h result: ${h4 ? h4.length + ' candles' : 'NULL'}`);
       } catch (e) {
-        signalLogger.debug(`4h fetch failed: ${e.message}`);
-      }
-
-      if (!m15 || m15.length < 20 || !h1 || h1.length < 10) {
-        signalLogger.debug(`Insufficient data: ${normalizedSymbol}`);
-        return null;
+        signalLogger.info(`[${normalizedSymbol}] 4h fetch failed (optional): ${e.message}`);
       }
 
       // Get price with 5s timeout, 2 retries
+      signalLogger.info(`[${normalizedSymbol}] Fetching current price...`);
       let currentPrice = null;
       let retries = 2;
       while (retries > 0 && !currentPrice) {
@@ -127,20 +146,25 @@ export class SignalGenerator extends EventEmitter {
             `price ${normalizedSymbol}`
           );
         } catch (e) {
-          signalLogger.debug(`Price fetch attempt failed: ${e.message}`);
+          signalLogger.info(`[${normalizedSymbol}] Price fetch attempt failed: ${e.message}`);
         }
         if (!currentPrice) {
           retries--;
-          await sleep(300);
+          if (retries > 0) {
+            signalLogger.info(`[${normalizedSymbol}] Retrying price fetch... (${retries} left)`);
+            await sleep(300);
+          }
         }
       }
       
+      signalLogger.info(`[${normalizedSymbol}] Price result: ${currentPrice}`);
       if (!currentPrice || currentPrice <= 0) {
-        signalLogger.debug(`No valid price: ${normalizedSymbol}`);
+        signalLogger.info(`[${normalizedSymbol}] FAIL: no valid price`);
         return null;
       }
 
       // Volume check with 5s timeout
+      signalLogger.info(`[${normalizedSymbol}] Fetching 24h volume...`);
       let volume24h = 0;
       try {
         volume24h = await withTimeout(
@@ -149,28 +173,35 @@ export class SignalGenerator extends EventEmitter {
           `volume ${normalizedSymbol}`
         );
       } catch (e) {
-        signalLogger.debug(`Volume fetch failed: ${e.message}`);
+        signalLogger.info(`[${normalizedSymbol}] Volume fetch failed: ${e.message}`);
       }
       
+      signalLogger.info(`[${normalizedSymbol}] Volume result: $${volume24h} (min: $${CONFIG.TA.MIN_VOLUME_USD})`);
       if (!volume24h || volume24h < CONFIG.TA.MIN_VOLUME_USD) {
-        signalLogger.debug(`Low volume: ${normalizedSymbol} $${volume24h || 0}`);
+        signalLogger.info(`[${normalizedSymbol}] FAIL: volume $${volume24h} below minimum $${CONFIG.TA.MIN_VOLUME_USD}`);
         return null;
       }
 
-      // Run analysis
+      // Run analysis per timeframe
+      signalLogger.info(`[${normalizedSymbol}] Running timeframe analysis...`);
       const analysis15m = runTimeframeAnalysis(m15, '15m');
       const analysis1h = runTimeframeAnalysis(h1, '1h');
       const analysis5m = m5 ? runTimeframeAnalysis(m5, '5m') : null;
       const analysis4h = h4 ? runTimeframeAnalysis(h4, '4h') : null;
 
+      signalLogger.info(`[${normalizedSymbol}] Analysis results — 15m: ${analysis15m ? 'OK' : 'NULL'}, 1h: ${analysis1h ? 'OK' : 'NULL'}, 5m: ${analysis5m ? 'OK' : 'NULL'}, 4h: ${analysis4h ? 'OK' : 'NULL'}`);
+
       if (!analysis15m || !analysis1h) {
-        signalLogger.debug(`Analysis returned null: ${normalizedSymbol}`);
+        signalLogger.info(`[${normalizedSymbol}] FAIL: core analysis returned null`);
         return null;
       }
 
+      // Multi-timeframe confluence
+      signalLogger.info(`[${normalizedSymbol}] Building multi-timeframe confluence...`);
       const multiTimeframe = buildMultiTimeframe(analysis15m, analysis1h, analysis4h);
 
-      // BTC trend — 5s timeout
+      // BTC trend filter
+      signalLogger.info(`[${normalizedSymbol}] Fetching BTC trend...`);
       let btcTrend = { primary: 'neutral', strength: 0, volatile: false };
       try {
         btcTrend = await withTimeout(
@@ -178,29 +209,35 @@ export class SignalGenerator extends EventEmitter {
           5000,
           'BTC trend'
         );
+        signalLogger.info(`[${normalizedSymbol}] BTC trend: ${btcTrend.primary} (strength: ${btcTrend.strength})`);
       } catch (e) {
-        signalLogger.debug(`BTC trend failed: ${e.message}`);
+        signalLogger.info(`[${normalizedSymbol}] BTC trend fetch failed: ${e.message}`);
       }
 
       const primary = analysis15m;
 
+      // Detect strategy setup
+      signalLogger.info(`[${normalizedSymbol}] Detecting strategy setup...`);
       const setup = this.strategy.detect({
         ...primary,
         multiTimeframe,
         price: currentPrice,
       });
 
+      signalLogger.info(`[${normalizedSymbol}] Strategy detect: ${setup ? setup.type + ' ' + setup.direction + ' (R:R ' + setup.rr.toFixed(2) + ':1)' : 'NULL'}`);
+      
       if (!setup) {
-        signalLogger.debug(`No strategy: ${normalizedSymbol}`);
+        signalLogger.info(`[${normalizedSymbol}] FAIL: no strategy setup matched`);
         return null;
       }
 
       // Validate R:R sanity
       if (setup.rr < CONFIG.RISK.MIN_RR || setup.rr > 10 || !isFinite(setup.rr)) {
-        signalLogger.debug(`Bad R:R: ${normalizedSymbol} ${setup.rr?.toFixed?.(2) || 'invalid'}`);
+        signalLogger.info(`[${normalizedSymbol}] FAIL: R:R ${setup.rr?.toFixed?.(2) || 'invalid'} outside valid range [${CONFIG.RISK.MIN_RR}, 10]`);
         return null;
       }
 
+      // Build complete analysis object
       const fullAnalysis = {
         symbol: normalizedSymbol,
         price: currentPrice,
@@ -216,19 +253,26 @@ export class SignalGenerator extends EventEmitter {
         ohlcv: m15,
       };
 
+      // Calculate confidence score
+      signalLogger.info(`[${normalizedSymbol}] Calculating confidence score...`);
       const confidence = this.confidence.calculate(fullAnalysis);
 
       signalLogger.info(
-        `${normalizedSymbol}: ${setup.type} ${setup.direction} | ` +
-        `Score: ${confidence.score}% | R:R ${setup.rr.toFixed(2)}:1`
+        `[${normalizedSymbol}] RESULT: ${setup.type} ${setup.direction} | ` +
+        `Score: ${confidence.score}% | R:R ${setup.rr.toFixed(2)}:1 | ` +
+        `Vol: ${primary.volume.ratio.toFixed(2)}x | ` +
+        `Tier: ${confidence.tier} | Passed: ${confidence.passed}`
       );
 
+      // Apply confidence filter unless forced
       if (!force && !confidence.passed) {
-        signalLogger.info(`REJECTED: ${normalizedSymbol} — ${confidence.recommendation}`);
+        signalLogger.info(`[${normalizedSymbol}] REJECTED: ${confidence.recommendation}`);
+        signalLogger.info(`=== END: ${symbol} [REJECTED] ===`);
         return null;
       }
 
-      signalLogger.info(`PASSED: ${normalizedSymbol} — ${confidence.tier} grade`);
+      signalLogger.info(`[${normalizedSymbol}] PASSED: ${confidence.tier} grade signal`);
+      signalLogger.info(`=== END: ${symbol} [PASSED] ===`);
 
       return {
         ...fullAnalysis,
@@ -237,7 +281,8 @@ export class SignalGenerator extends EventEmitter {
       };
 
     } catch (err) {
-      signalLogger.error({ err }, `Analysis failed: ${normalizedSymbol}`);
+      signalLogger.error({ err }, `[${normalizedSymbol}] CRASH during analysis`);
+      signalLogger.info(`=== END: ${symbol} [CRASH] ===`);
       return null;
     }
   }
@@ -373,6 +418,9 @@ export class SignalGenerator extends EventEmitter {
       return null;
     }
 
+    // CRITICAL: Mark as scanned BEFORE analysis to prevent concurrent re-entry
+    this._markScanned(symbol);
+
     const analysis = await this.analyzeSymbol(symbol, force);
     if (!analysis) return null;
 
@@ -453,13 +501,11 @@ export class SignalGenerator extends EventEmitter {
         for (const symbol of shuffled) {
           if (!this.isScanning) break;
 
-          // Skip if recently scanned (15 min cooldown)
           if (this._wasRecentlyScanned(symbol)) {
             signalLogger.debug(`Skipping ${symbol} — recently scanned`);
             continue;
           }
           
-          // Skip if active signal exists (2h cooldown per symbol)
           const hasActive = Array.from(this.activeSignals.values())
             .some(s => s.symbol === symbol && Date.now() - new Date(s.timestamp).getTime() < 7200000);
           
@@ -471,7 +517,6 @@ export class SignalGenerator extends EventEmitter {
           attempted++;
           
           try {
-            // CRITICAL: Timeout the ENTIRE generateSignal call, fully awaited
             const signal = await withTimeout(
               this.generateSignal(symbol),
               25000,
@@ -487,7 +532,6 @@ export class SignalGenerator extends EventEmitter {
             signalLogger.error({ err }, `Timeout or error on ${symbol}`);
           }
           
-          // ALWAYS pause between coins
           await sleep(1500);
         }
 
@@ -513,7 +557,8 @@ export class SignalGenerator extends EventEmitter {
   /**
    * Handle signal closure from monitor
    */
-  _onSignalClose(signalId, result, exitPrice) {
+  
+        _onSignalClose(signalId, result, exitPrice) {
     const signal = this.activeSignals.get(signalId);
     if (!signal) {
       signalLogger.warn(`Close callback for unknown signal: ${signalId.slice(0, 8)}`);
@@ -555,12 +600,11 @@ export class SignalGenerator extends EventEmitter {
   _wasRecentlyScanned(symbol) {
     const lastScan = this._recentScans.get(symbol);
     if (!lastScan) return false;
-    return Date.now() - lastScan < 900000; // 15 minutes
+    return Date.now() - lastScan < 900000;
   }
 
   _markScanned(symbol) {
     this._recentScans.set(symbol, Date.now());
-    // Cleanup old entries
     const cutoff = Date.now() - 3600000;
     for (const [sym, time] of this._recentScans) {
       if (time < cutoff) this._recentScans.delete(sym);
@@ -594,5 +638,4 @@ export class SignalGenerator extends EventEmitter {
       riskStatus: this.riskManager.getStatus(),
     };
   }
-      }
-          
+  }
