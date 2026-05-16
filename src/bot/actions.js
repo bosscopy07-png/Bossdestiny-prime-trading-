@@ -13,10 +13,8 @@ import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
  */
 export function registerActions(bot, generator, marketData, userSettings) {
   
-  // Helper: check if market data is ready for operations
   const isReady = () => marketData?.isRunning === true && marketData?.exchange != null;
 
-  // Helper: safe callback query answer with error fallback
   const safeAnswer = async (ctx, text = '') => {
     try {
       await ctx.answerCbQuery(text);
@@ -24,8 +22,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
       botLogger.debug({ err: err.message }, 'answerCbQuery failed');
     }
   };
-
-  // ─── DASHBOARD ─────────────────────────────────────────────────
 
   bot.action('DASHBOARD', async (ctx) => {
     try {
@@ -66,8 +62,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await ctx.reply('⚠️ Failed to load dashboard. Please try again.');
     }
   });
-
-  // ─── GET SIGNAL ──────────────────────────────────────────────────
 
   bot.action('GET_SIGNAL', async (ctx) => {
     try {
@@ -118,8 +112,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  // ─── START LIVE (admin only) ───────────────────────────────────
-
   bot.action('START_LIVE', async (ctx) => {
     try {
       if (!isAdmin(ctx)) {
@@ -133,16 +125,18 @@ export function registerActions(bot, generator, marketData, userSettings) {
       }
 
       await safeAnswer(ctx, '🔥 Starting...');
-      await generator.startContinuousScanning();
       await ctx.reply('🔥 Live scanning activated');
+      
+      // Fire and forget — startContinuousScanning never returns
+      generator.startContinuousScanning().catch(err => {
+        botLogger.error({ err: err.message, stack: err.stack }, 'Scanner crashed from START_LIVE');
+      });
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Error in START_LIVE action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to start scanning.');
     }
   });
-
-  // ─── STOP SCAN (admin only) ────────────────────────────────────
 
   bot.action('STOP_SCAN', async (ctx) => {
     try {
@@ -161,8 +155,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  // ─── STATS ───────────────────────────────────────────────────────
-
   bot.action('STATS', async (ctx) => {
     try {
       await safeAnswer(ctx);
@@ -172,8 +164,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await safeAnswer(ctx, 'Error');
     }
   });
-
-  // ─── SETTINGS ──────────────────────────────────────────────────
 
   bot.action('SETTINGS', async (ctx) => {
     try {
@@ -203,8 +193,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  // ─── CONFIDENCE SETTINGS ───────────────────────────────────────
-
   bot.action(/SET_CONF_(\d+)/, async (ctx) => {
     try {
       const conf = parseInt(ctx.match[1]);
@@ -220,8 +208,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await ctx.reply('⚠️ Failed to update settings.');
     }
   });
-
-  // ─── MAIN MENU ───────────────────────────────────────────────────
 
   bot.action('MAIN_MENU', async (ctx) => {
     try {
@@ -239,8 +225,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  // ─── SIGNAL TAKEN ──────────────────────────────────────────────
-
   bot.action(/TAKEN_(.+)/, async (ctx) => {
     try {
       const signalId = ctx.match[1];
@@ -253,8 +237,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  // ─── SIGNAL SKIPPED ─────────────────────────────────────────────
-
   bot.action(/SKIPPED_(.+)/, async (ctx) => {
     try {
       const signalId = ctx.match[1];
@@ -265,8 +247,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await safeAnswer(ctx, 'Error');
     }
   });
-
-  // ─── ENABLE ALERTS ─────────────────────────────────────────────
 
   bot.action('ENABLE_ALERTS', async (ctx) => {
     try {
@@ -286,15 +266,11 @@ export function registerActions(bot, generator, marketData, userSettings) {
   botLogger.info('Action handlers registered');
 }
 
-// ==========================================
-// HELPERS
-// ==========================================
-
 function isAdmin(ctx) {
   return CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
 }
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-                      }
-        
+    }
+                       
