@@ -1,12 +1,12 @@
 // ==========================================
 // TELEGRAM BOT INTERFACE
-// Main bot class with event wiring
+// Main bot class with event wiring — v4.0
 // ==========================================
 
 import { Telegraf } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
-import { formatSignalMessage } from '../signals/formatter.js';
+import { formatPage1, formatPage2, formatClosed, getPage1Markup } from '../signals/formatter.js';
 import { registerCommands } from './commands.js';
 import { registerActions } from './actions.js';
 import { MarketDataEngine } from '../exchange/marketData.js';
@@ -88,7 +88,7 @@ export class SignalAlphaBot {
         }, 10000);
       }
       
-      botLogger.info('SignalAlpha v3.0 is LIVE!');
+      botLogger.info('SignalAlpha v4.0 is LIVE!');
       
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Startup failed');
@@ -100,12 +100,13 @@ export class SignalAlphaBot {
   }
 
   async _handleNewSignal(signal) {
-    const text = formatSignalMessage(signal);
+    // Send Page 1 with navigation to admins
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
-        await this.bot.telegram.sendMessage(adminId, text, {
+        await this.bot.telegram.sendMessage(adminId, formatPage1(signal), {
           parse_mode: 'HTML',
-          disable_web_page_preview: true
+          disable_web_page_preview: true,
+          ...getPage1Markup(signal.id)
         });
       } catch (err) {
         botLogger.error({ err: err.message, adminId }, 'Failed to notify admin of new signal');
@@ -114,21 +115,23 @@ export class SignalAlphaBot {
   }
 
   async _handleSignalClose(data) {
-    const { signal, result, pnl, pnlPct } = data;
-    const emoji = result.includes('take_profit') ? '🎯' : '🛑';
-    const text = [
-      `${emoji} <b>SIGNAL CLOSED</b>`,
-      '',
-      `${escapeHtml(signal.symbol)} ${signal.direction}`,
-      `Result: <b>${escapeHtml(result.toUpperCase())}</b>`,
-      `P&L: $${Math.abs(pnl).toFixed(2)} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`,
-      '',
-      `Updated Capital: $${CONFIG.CHALLENGE.CURRENT_CAPITAL.toFixed(2)}`
-    ].join('\n');
+    const { signal, result, exitPrice, pnl, pnlPct } = data;
+    
+    // Use the proper formatter for closed signals
+    const text = formatClosed(signal, result, exitPrice, pnl, pnlPct);
 
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
-        await this.bot.telegram.sendMessage(adminId, text, { parse_mode: 'HTML' });
+        await this.bot.telegram.sendMessage(adminId, text, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
+              Markup.button.callback('🎯 New Signal', 'GET_SIGNAL')
+            ]
+          ])
+        });
       } catch (err) {
         botLogger.error({ err: err.message, adminId }, 'Failed to notify admin of signal close');
       }
