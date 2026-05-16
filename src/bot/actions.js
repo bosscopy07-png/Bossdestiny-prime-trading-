@@ -1,13 +1,20 @@
 // ==========================================
 // BOT ACTION HANDLERS
 // Inline keyboard callback handlers — 2-Page Signal Format
-// VERSION: 3.3-community
+// VERSION: 4.0 — Recoded with matching exports
 // ==========================================
 
 import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
-import { formatPage1, formatPage2, getSignalButtons, formatClosed, getCloseButtons, formatDashboard } from '../signals/formatter.js';
+import { 
+  formatPage1, 
+  formatPage2, 
+  formatDashboard, 
+  formatClosed,
+  getPage1Markup,
+  getCloseMarkup
+} from '../signals/formatter.js';
 
 // Store active signals for page navigation (use Redis in production)
 const activeSignalMessages = new Map();
@@ -87,28 +94,14 @@ export function registerActions(bot, generator, marketData, userSettings) {
       for (const symbol of symbols.slice(0, 5)) {
         const signal = await generator.generateSignal(symbol);
         if (signal) {
-          // Store for page navigation
           activeSignalMessages.set(signal.id, signal);
           
           await ctx.deleteMessage(scanningMsg.message_id).catch(() => {});
           
-          // Send Page 1 with navigation buttons
-          await ctx.reply(formatSignalPage1(signal), {
+          await ctx.reply(formatPage1(signal), {
             parse_mode: 'HTML',
             disable_web_page_preview: true,
-            ...Markup.inlineKeyboard([
-              [
-                Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
-                Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
-              ],
-              [
-                Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`),
-                Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)
-              ],
-              [
-                Markup.button.callback('📊 Dashboard', 'DASHBOARD')
-              ]
-            ])
+            ...getPage1Markup(signal.id)
           });
           
           found = true;
@@ -141,7 +134,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  // ─── PAGE NAVIGATION (◀️ ▶️) ──────────────────────────────
+  // ─── PAGE NAVIGATION ──────────────────────────────────────
 
   bot.action(/PAGE1_(.+)/, async (ctx) => {
     try {
@@ -155,22 +148,10 @@ export function registerActions(bot, generator, marketData, userSettings) {
       
       await safeAnswer(ctx);
       
-      await ctx.editMessageText(formatSignalPage1(signal), {
+      await ctx.editMessageText(formatPage1(signal), {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
-            Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
-          ],
-          [
-            Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`),
-            Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)
-          ],
-          [
-            Markup.button.callback('📊 Dashboard', 'DASHBOARD')
-          ]
-        ])
+        ...getPage1Markup(signal.id)
       });
     } catch (err) {
       botLogger.error({ err: err.message }, 'Error in PAGE1 action');
@@ -190,7 +171,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
       
       await safeAnswer(ctx);
       
-      await ctx.editMessageText(formatSignalPage2(signal), {
+      await ctx.editMessageText(formatPage2(signal), {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
@@ -230,7 +211,6 @@ export function registerActions(bot, generator, marketData, userSettings) {
       await safeAnswer(ctx, '🔥 Starting...');
       await ctx.reply('🔥 Live scanning activated. Signals will auto-send when qualified.');
       
-      // Start continuous scanning (fire and forget)
       generator.startContinuousScanning().catch(err => {
         botLogger.error({ err: err.message, stack: err.stack }, 'Scanner crashed from START_LIVE');
       });
@@ -383,30 +363,19 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  // ─── AUTO-SIGNAL LISTENER (from continuous scanning) ─────
+  // ─── AUTO-SIGNAL LISTENER ─────────────────────────────────
 
   generator.on('signal', async (signal) => {
     try {
-      // Store for navigation
       activeSignalMessages.set(signal.id, signal);
       
-      // Broadcast to all users with notifications enabled
       for (const [userId, settings] of userSettings.entries()) {
         if (settings.notifications !== false && signal.confidence.score >= (settings.minConfidence || 60)) {
           try {
-            await bot.telegram.sendMessage(userId, formatSignalPage1(signal), {
+            await bot.telegram.sendMessage(userId, formatPage1(signal), {
               parse_mode: 'HTML',
               disable_web_page_preview: true,
-              ...Markup.inlineKeyboard([
-                [
-                  Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
-                  Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
-                ],
-                [
-                  Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`),
-                  Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)
-                ]
-              ])
+              ...getPage1Markup(signal.id)
             });
           } catch (err) {
             botLogger.debug({ err: err.message, userId }, 'Failed to send auto-signal');
@@ -422,22 +391,15 @@ export function registerActions(bot, generator, marketData, userSettings) {
 
   generator.on('signal_closed', async ({ signal, result, exitPrice, pnl, pnlPct }) => {
     try {
-      // Remove from active
       activeSignalMessages.delete(signal.id);
       
-      // Broadcast close to all users who received the signal
       for (const [userId, settings] of userSettings.entries()) {
         if (settings.notifications !== false) {
           try {
-            await bot.telegram.sendMessage(userId, formatCloseMessage(signal, result, exitPrice, pnl, pnlPct), {
+            await bot.telegram.sendMessage(userId, formatClosed(signal, result, exitPrice, pnl, pnlPct), {
               parse_mode: 'HTML',
               disable_web_page_preview: true,
-              ...Markup.inlineKeyboard([
-                [
-                  Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
-                  Markup.button.callback('🎯 New Signal', 'GET_SIGNAL')
-                ]
-              ])
+              ...getCloseMarkup()
             });
           } catch (err) {
             botLogger.debug({ err: err.message, userId }, 'Failed to send close message');
@@ -449,7 +411,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  botLogger.info('Action handlers registered (v3.3-community)');
+  botLogger.info('Action handlers registered (v4.0)');
 }
 
 // ─── HELPERS ───────────────────────────────────────────────
@@ -465,4 +427,4 @@ function sleep(ms) {
 // ─── EXPORTS ───────────────────────────────────────────────
 
 export { activeSignalMessages };
-          
+    
