@@ -427,7 +427,7 @@ export class SignalGenerator extends EventEmitter {
     if (!analysis) return null;
 
     // COMMUNITY GATE: Minimum standards for public signals
-    const MIN_CONFIDENCE = 50;
+    const MIN_CONFIDENCE = 40;
     const MIN_VOLUME = 0.8;
     const MIN_RR = 1.8;
 
