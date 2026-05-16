@@ -132,5 +132,5 @@ export function calculateFibonacci(high, low) {
     1: low,
     range: diff,
   };
-        }
-                                              
+}
+  
