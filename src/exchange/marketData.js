@@ -346,8 +346,45 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  async getTopVolumeSymbols(count = 20) {
+    async getTopVolumeSymbols(count = 20) {
     marketLogger.info(`Fetching top ${count} volume symbols...`);
+
+    // ─── FILTER CONFIGURATION ───────────────────────────────────
+    const COMMODITY_BASES = ['XAG', 'XAU', 'GOLD', 'SILVER', 'OIL', 'NATGAS', 'GAS', 'COPPER', 'WHEAT', 'CORN', 'SOY'];
+    
+    const FOREX_BASES = ['EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'SGD', 'HKD', 'CNY', 'MXN', 'ZAR', 'TRY', 'SEK', 'NOK'];
+    
+    const STOCK_COIN_BASES = [
+      'TSLA', 'AAPL', 'NVDA', 'AMZN', 'GOOGL', 'MSFT', 'META', 'NFLX', 'COIN', 'AMD', 'INTC', 'BABA', 
+      'PLTR', 'DIS', 'BA', 'JPM', 'V', 'MA', 'WMT', 'T', 'KO', 'PEP', 'MCD', 'NKE', 'PYPL', 'UBER', 
+      'LYFT', 'ZM', 'SNOW', 'CRM', 'ORCL', 'IBM', 'GE', 'F', 'GM', 'TSM', 'ASML', 'ARM', 'QCOM', 
+      'AVGO', 'TXN', 'MU', 'LRCX', 'KLAC', 'SNPS', 'CDNS', 'ANSS', 'ADSK', 'PANW', 'CRWD', 'FTNT', 
+      'CYBR', 'SPLK', 'DDOG', 'MDB', 'NET', 'FSLY', 'OKTA', 'DOCU', 'SQ', 'SHOP', 'SE', 'MELI', 
+      'ABNB', 'DASH', 'U', 'RBLX', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'LMND', 'ROOT', 'HCP', 'TOST', 
+      'GTLB', 'ASAN', 'MNDY', 'SMAR', 'AI', 'PATH', 'BIG', 'CFLT'
+    ];
+    
+    const INDEX_BASES = ['US500', 'US100', 'US30', 'DE40', 'UK100', 'JP225', 'HK50', 'AU200', 'EU50', 'FR40', 'ES35', 'IT40', 'CH20', 'CA60'];
+    // ─────────────────────────────────────────────────────────────
+
+    const isExcluded = (base, quote, symbol) => {
+      // Commodities
+      if (COMMODITY_BASES.includes(base)) return true;
+      
+      // Forex (fiat crosses)
+      if (FOREX_BASES.includes(base) || FOREX_BASES.includes(quote)) return true;
+      
+      // Stock coins
+      if (STOCK_COIN_BASES.includes(base)) return true;
+      
+      // Indices
+      if (INDEX_BASES.includes(base)) return true;
+      
+      // Leveraged tokens
+      if (/(3L|3S|5L|5S|UP|DOWN)$/.test(base)) return true;
+      
+      return false;
+    };
 
     try {
       const tickers = await this._fetchWithTimeout(
@@ -364,15 +401,14 @@ export class MarketDataEngine extends EventEmitter {
           if (!market) return false;
           if (market.active === false) return false;
           
-          const isUSDT = market.settle === 'USDT' || market.quote === 'USDT';
+          const base = market.base || '';
+          const quote = market.quote || '';
+          
+          if (isExcluded(base, quote, market.symbol)) return false;
+          
+          const isUSDT = market.settle === 'USDT' || quote === 'USDT';
           const isPerp = market.type === 'swap' || (market.type === 'future' && !market.expiry);
           const isLinear = market.linear !== false;
-          
-          const base = market.base || '';
-          const isMetal = ['XAG', 'XAU', 'GOLD', 'SILVER'].includes(base);
-          const isLeveragedToken = /(3L|3S|5L|5S|UP|DOWN)$/.test(base);
-          
-          if (isMetal || isLeveragedToken) return false;
           
           const volume = t.quoteVolume || t.baseVolume * t.last || 0;
           
@@ -385,9 +421,7 @@ export class MarketDataEngine extends EventEmitter {
       
       if (symbols.length === 0) {
         marketLogger.warn('No symbols passed filter, using fallback');
-        return this.perpetualMarkets
-          .filter(s => !['XAG', 'XAU'].some(bad => s.includes(bad)))
-          .slice(0, count);
+        return this._getFilteredFallback(count, isExcluded);
       }
 
       marketLogger.info(`Top volumes: ${symbols.slice(0, 10).join(', ')}`);
@@ -395,10 +429,26 @@ export class MarketDataEngine extends EventEmitter {
 
     } catch (err) {
       marketLogger.error({ err }, 'Volume fetch failed');
-      return this.perpetualMarkets.slice(0, count);
+      return this._getFilteredFallback(count, isExcluded);
     }
   }
 
+  /**
+   * Fallback that applies the SAME filters to perpetualMarkets
+   */
+  _getFilteredFallback(count, isExcludedFn) {
+    const filtered = this.perpetualMarkets.filter(symbol => {
+      const market = this.exchange.markets?.[symbol];
+      if (!market) return false;
+      const base = market.base || '';
+      const quote = market.quote || '';
+      return !isExcludedFn(base, quote, symbol);
+    });
+    
+    marketLogger.warn(`Fallback returned ${filtered.length} symbols after filtering`);
+    return filtered.slice(0, count);
+        }
+  
   async getBTCTrend() {
     const btcSymbols = this.perpetualMarkets.filter(s => s.includes('BTC/'));
     const btcSymbol = btcSymbols.find(s => s.includes('USDT')) || btcSymbols[0];
