@@ -140,4 +140,4 @@ export function calculateMACD(prices, fast = 12, slow = 26, signal = 9) {
     histAvg: Math.round(histAvg * 10000) / 10000,
     momentum: Math.abs(histAvg),
   };
-    }
+}
