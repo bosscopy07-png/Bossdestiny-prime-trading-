@@ -600,7 +600,7 @@ export class SignalGenerator extends EventEmitter {
   _wasRecentlyScanned(symbol) {
     const lastScan = this._recentScans.get(symbol);
     if (!lastScan) return false;
-    return Date.now() - lastScan < 900000;
+    return Date.now() - lastScan < 120000;
   }
 
   _markScanned(symbol) {
