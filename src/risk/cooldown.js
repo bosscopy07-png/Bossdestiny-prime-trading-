@@ -1,6 +1,7 @@
 // ==========================================
 // COOLDOWN & RISK STATE MANAGER
 // Graduated risk scaling — wins increase appetite, losses reduce it
+// VERSION: 3.3-community
 // ==========================================
 
 import { CONFIG } from '../config/index.js';
@@ -16,10 +17,9 @@ export class RiskManager {
     this.lastWinTime = null;
     this.inCooldown = false;
     this.cooldownTimer = null;
-    this.cooldownLevel = 0;  // 0=none, 1=light, 2=medium, 3=heavy
+    this.cooldownLevel = 0;
     this.todayKey = getTodayKey();
     
-    // Streak tracking for position sizing
     this.streakData = {
       winStreak: 0,
       lossStreak: 0,
@@ -31,46 +31,34 @@ export class RiskManager {
     riskLogger.info('RiskManager initialized (dynamic mode)');
   }
 
-  /**
-   * Check if trading is allowed right now
-   * Graduated: Light cooldown = scan only, no new signals
-   *            Medium cooldown = reduced size only
-   *            Heavy cooldown = full stop
-   */
   canTrade() {
     if (this.cooldownLevel === 3) {
       riskLogger.warn('Trading blocked: heavy cooldown');
       return false;
     }
     
-    // Daily loss limit (adaptive: 10% of current capital, not start capital)
     const currentCapital = CONFIG.CHALLENGE.CURRENT_CAPITAL;
     const dailyLoss = this.getDailyLoss();
-    const dailyLimit = currentCapital * 0.10;  // 10% of current, not start
-    
+    const dailyLimit = currentCapital * 0.10;
+
     if (dailyLoss >= dailyLimit) {
       riskLogger.warn(`Daily loss limit: $${dailyLoss.toFixed(2)}/${dailyLimit.toFixed(2)}`);
       this.cooldownLevel = 3;
       return false;
     }
 
-    // Consecutive losses trigger graduated cooldown
     if (this.consecutiveLosses >= 5) {
-      this._setCooldown(3, 30);  // 30 min heavy
+      this._setCooldown(3, 30);
       return false;
     } else if (this.consecutiveLosses >= 3) {
-      this._setCooldown(2, 15);  // 15 min medium
+      this._setCooldown(2, 15);
     } else if (this.consecutiveLosses >= 2) {
-      this._setCooldown(1, 5);   // 5 min light
+      this._setCooldown(1, 5);
     }
 
     return true;
   }
 
-  /**
-   * Get current risk multiplier for position sizing
-   * Returns: { winStreak, lossStreak, dailyPnL, cooldownLevel }
-   */
   getStreakData() {
     return {
       winStreak: this.streakData.winStreak,
@@ -80,10 +68,6 @@ export class RiskManager {
     };
   }
 
-  /**
-   * Record a trade result
-   * DYNAMIC: Tracks streaks, adapts to result size
-   */
   recordResult(pnl) {
     const today = getTodayKey();
     if (today !== this.todayKey) {
@@ -97,7 +81,6 @@ export class RiskManager {
     const winKey = `${today}_win`;
 
     if (pnl < 0) {
-      // Weighted consecutive loss: big loss counts more
       const lossWeight = Math.min(Math.abs(pnl) / (CONFIG.CHALLENGE.CURRENT_CAPITAL * 0.02), 2);
       this.consecutiveLosses += lossWeight;
       this.consecutiveWins = 0;
@@ -115,7 +98,7 @@ export class RiskManager {
         `Daily P&L: $${this.streakData.dailyPnL.toFixed(2)}`
       );
     } else {
-      this.consecutiveLosses = Math.max(0, this.consecutiveLosses - 1);  // Reduce, don't reset
+      this.consecutiveLosses = Math.max(0, this.consecutiveLosses - 1);
       this.consecutiveWins++;
       this.streakData.lossStreak = 0;
       this.streakData.winStreak++;
@@ -125,7 +108,6 @@ export class RiskManager {
       this.dailyStats.set(winKey, currentWin + pnl);
       this.streakData.winCount++;
       
-      // Clear light cooldown on win
       if (this.cooldownLevel === 1) {
         this._clearCooldown();
       }
@@ -138,27 +120,18 @@ export class RiskManager {
     }
   }
 
-  /**
-   * Get today's accumulated loss
-   */
   getDailyLoss() {
     const key = `${getTodayKey()}_loss`;
     return this.dailyStats.get(key) || 0;
   }
 
-  /**
-   * Get today's accumulated win
-   */
   getDailyWin() {
     const key = `${getTodayKey()}_win`;
     return this.dailyStats.get(key) || 0;
   }
 
-  /**
-   * Graduated cooldown setter
-   */
   _setCooldown(level, minutes) {
-    if (this.cooldownLevel >= level) return;  // Don't downgrade
+    if (this.cooldownLevel >= level) return;
     
     this.cooldownLevel = level;
     const duration = minutes * 60 * 1000;
@@ -200,9 +173,6 @@ export class RiskManager {
     riskLogger.info('New day — stats reset');
   }
 
-  /**
-   * Get current risk status
-   */
   getStatus() {
     return {
       cooldownLevel: this.cooldownLevel,
@@ -221,9 +191,6 @@ export class RiskManager {
     };
   }
 
-  /**
-   * Reset all state
-   */
   reset() {
     this.dailyStats.clear();
     this.consecutiveLosses = 0;
