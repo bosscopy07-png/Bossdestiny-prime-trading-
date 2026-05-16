@@ -48,9 +48,6 @@ export class MarketDataEngine extends EventEmitter {
 
   // ─── INITIALIZATION ─────────────────────────────────────────────
 
-  /**
-   * Initialize exchange connection and load markets
-   */
   async initialize() {
     marketLogger.info('Initializing MarketDataEngine...');
 
@@ -64,22 +61,17 @@ export class MarketDataEngine extends EventEmitter {
       }
 
       this.startWebSocketFeeds();
-      
-      // Delay polling to let WS establish
       setTimeout(() => this.startOhlcvPolling(), 5000);
       
       this.isRunning = true;
       marketLogger.info('MarketDataEngine ready');
       
     } catch (err) {
-      marketLogger.error({ err: err.message }, 'Initialization failed');
+      marketLogger.error({ err: err.message, stack: err.stack }, 'Initialization failed');
       throw err;
     }
   }
 
-  /**
-   * Create and configure CCXT exchange instance
-   */
   async _initExchange() {
     const exchangeClass = ccxt[CONFIG.EXCHANGE.ID];
     if (!exchangeClass) {
@@ -112,9 +104,6 @@ export class MarketDataEngine extends EventEmitter {
     marketLogger.info(`Exchange initialized: ${CONFIG.EXCHANGE.ID}`);
   }
 
-  /**
-   * Load markets with retry logic
-   */
   async _loadMarketsWithRetry(maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -133,9 +122,6 @@ export class MarketDataEngine extends EventEmitter {
 
   // ─── WEBSOCKET FEEDS ────────────────────────────────────────────
 
-  /**
-   * Start Binance WebSocket feeds for major pairs
-   */
   startWebSocketFeeds() {
     const majorBases = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC'];
     const pairs = majorBases.map(b => `${b}USDT`.toLowerCase());
@@ -147,9 +133,6 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  /**
-   * Connect single WebSocket with auto-reconnect
-   */
   _connectWebSocket(pair) {
     const wsUrl = `${CONFIG.DATA.BINANCE_FUTURES_WS}/${pair}@kline_1m`;
     
@@ -199,9 +182,6 @@ export class MarketDataEngine extends EventEmitter {
 
   // ─── OHLCV POLLING ──────────────────────────────────────────────
 
-  /**
-   * Start background OHLCV polling
-   */
   startOhlcvPolling() {
     marketLogger.info('Starting OHLCV polling...');
 
@@ -256,9 +236,6 @@ export class MarketDataEngine extends EventEmitter {
     setTimeout(poll, 10000);
   }
 
-  /**
-   * Safe OHLCV fetch with comprehensive error handling
-   */
   async safeFetchOHLCV(symbol, timeframe, limit = 100) {
     if (!symbol) {
       marketLogger.debug('No symbol provided for OHLCV');
@@ -304,9 +281,6 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  /**
-   * Fetch OHLCV with cache
-   */
   async fetchOHLCV(symbol, timeframe, limit = 100) {
     const normalized = this.normalizeSymbol(symbol) || symbol;
     const key = `${normalized}_${timeframe}`;
@@ -324,29 +298,24 @@ export class MarketDataEngine extends EventEmitter {
       }
       return cached?.data || null;
     } catch (err) {
-      marketLogger.error(`fetchOHLCV failed: ${err.message}`);
+      marketLogger.error({ err: err.message, stack: err.stack }, 'fetchOHLCV failed');
       return cached?.data || null;
     }
   }
 
   // ─── PRICE & VOLUME ─────────────────────────────────────────────
 
-  /**
-   * Get current price — WebSocket first, REST fallback
-   */
   async getCurrentPrice(symbol) {
     if (!symbol) return null;
 
     const normalized = this.normalizeSymbol(symbol) || symbol;
     const wsKey = this.toWsFormat(normalized);
 
-    // Try WebSocket cache
     const wsData = this.priceCache.get(wsKey);
     if (wsData && Date.now() - wsData.timestamp < CONFIG.SCAN.PRICE_CACHE_TTL_MS) {
       return wsData.price;
     }
 
-    // Fallback to REST
     try {
       if (!this.isValidSymbol(normalized)) {
         marketLogger.debug(`Invalid symbol for price: ${normalized}`);
@@ -355,14 +324,11 @@ export class MarketDataEngine extends EventEmitter {
       const ticker = await this.exchange.fetchTicker(normalized);
       return ticker?.last || null;
     } catch (err) {
-      marketLogger.error(`Price fetch failed ${normalized}: ${err.message}`);
+      marketLogger.error({ err: err.message }, `Price fetch failed ${normalized}`);
       return null;
     }
   }
 
-  /**
-   * Get 24h volume
-   */
   async get24hVolume(symbol) {
     if (!symbol) return 0;
     
@@ -378,41 +344,57 @@ export class MarketDataEngine extends EventEmitter {
   }
 
   /**
-   * Get top volume symbols
+   * Get top volume symbols with timeout protection
    */
   async getTopVolumeSymbols(count = 20) {
     marketLogger.info(`Fetching top ${count} volume symbols...`);
 
     try {
-      const tickers = await this.exchange.fetchTickers();
+      const tickers = await this._fetchWithTimeout(
+        () => this.exchange.fetchTickers(),
+        15000,
+        'fetchTickers'
+      );
       
+      marketLogger.info(`Fetched ${Object.keys(tickers).length} tickers`);
+
       const validTickers = Object.values(tickers)
         .filter(t => {
           const market = this.exchange.markets[t.symbol];
           if (!market) return false;
           if (market.active === false) return false;
-          if (market.quote !== 'USDT' && market.settle !== 'USDT') return false;
-          if (market.type !== 'swap' && market.type !== 'future') return false;
-          return (t.quoteVolume || 0) > CONFIG.TA.MIN_VOLUME_USD;
+          
+          const isUSDT = market.quote === 'USDT' || 
+                         market.settle === 'USDT' || 
+                         market.symbol?.includes('USDT');
+          
+          const isPerp = market.type === 'swap' || 
+                         market.type === 'future' ||
+                         market.linear === true;
+          
+          return isUSDT && isPerp;
         })
         .sort((a, b) => (b.quoteVolume || 0) - (a.quoteVolume || 0))
         .slice(0, count);
 
       const symbols = validTickers.map(t => t.symbol);
-      marketLogger.info(`Top volumes: ${symbols.slice(0, 5).join(', ')}...`);
+      
+      if (symbols.length === 0) {
+        marketLogger.warn('No symbols from tickers, using perpetualMarkets fallback');
+        return this.perpetualMarkets.slice(0, count);
+      }
+
+      marketLogger.info(`Top volumes: ${symbols.slice(0, 10).join(', ')}`);
       return symbols;
 
     } catch (err) {
-      marketLogger.error(`Volume fetch failed: ${err.message}`);
-      return this.perpetualMarkets.slice(0, 10);
+      marketLogger.error({ err: err.message, stack: err.stack }, 'Volume fetch failed');
+      return this.perpetualMarkets.slice(0, count);
     }
   }
 
   // ─── BTC TREND ──────────────────────────────────────────────────
 
-  /**
-   * Get BTC trend analysis for market filter
-   */
   async getBTCTrend() {
     const btcSymbols = this.perpetualMarkets.filter(s => s.includes('BTC/'));
     const btcSymbol = btcSymbols.find(s => s.includes('USDT')) || btcSymbols[0];
@@ -455,7 +437,8 @@ export class MarketDataEngine extends EventEmitter {
       if (current > ema20Val && ema20Val > ema50Val) {
         primary = 'bullish';
         strength = ema200Val ? (current > ema200Val ? 80 : 60) : 60;
-      } else if (current < ema20Val && ema50Val > ema50Val) {
+      } else if (current < ema20Val && ema20Val < ema50Val) {
+        // FIXED: was ema50Val > ema50Val (always false)
         primary = 'bearish';
         strength = ema200Val ? (current < ema200Val ? 80 : 60) : 60;
       }
@@ -465,16 +448,13 @@ export class MarketDataEngine extends EventEmitter {
       return { primary, strength, volatile, atr: atr.percent };
 
     } catch (err) {
-      marketLogger.error(`BTC trend error: ${err.message}`);
+      marketLogger.error({ err: err.message, stack: err.stack }, 'BTC trend error');
       return { primary: 'neutral', strength: 0, volatile: false };
     }
   }
 
   // ─── SHUTDOWN ───────────────────────────────────────────────────
 
-  /**
-   * Graceful shutdown
-   */
   shutdown() {
     marketLogger.info('Shutting down MarketDataEngine...');
     this.isRunning = false;
@@ -495,5 +475,28 @@ export class MarketDataEngine extends EventEmitter {
 
     marketLogger.info('MarketDataEngine shut down');
   }
-      }
+
+  // ─── TIMEOUT UTILITY ────────────────────────────────────────────
+
+  /**
+   * Wrap any promise with a timeout
+   */
+  async _fetchWithTimeout(promiseFn, ms, label) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${ms}ms`));
+      }, ms);
+
+      promiseFn()
+        .then(result => {
+          clearTimeout(timer);
+          resolve(result);
+        })
+        .catch(err => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+  }
     
