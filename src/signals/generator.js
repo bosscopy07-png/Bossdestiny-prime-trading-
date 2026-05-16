@@ -1,7 +1,7 @@
-
 // ==========================================
 // REAL-TIME SIGNAL GENERATOR
 // Orchestrates analysis, scoring, and signal creation
+// VERSION: 3.3-community — Swing-focused, community-grade
 // ==========================================
 
 import { EventEmitter } from 'events';
@@ -17,7 +17,6 @@ import { RiskManager } from '../risk/cooldown.js';
 import { SignalMonitor } from './monitor.js';
 import { TradeLogger } from '../utils/tradeLogger.js';
 
-// Utility: Promise with timeout
 function withTimeout(promise, ms, context) {
   const timeout = new Promise((_, reject) => 
     setTimeout(() => reject(new Error(`${context} timed out after ${ms}ms`)), ms)
@@ -29,9 +28,7 @@ export class SignalGenerator extends EventEmitter {
   constructor(marketData) {
     super();
     
-    if (!marketData) {
-      throw new Error('MarketDataEngine required');
-    }
+    if (!marketData) throw new Error('MarketDataEngine required');
 
     this.marketData = marketData;
     this.strategy = new StrategyDetector();
@@ -50,12 +47,9 @@ export class SignalGenerator extends EventEmitter {
     this._todayKey = getTodayKey();
     this._recentScans = new Map();
     
-    signalLogger.info('SignalGenerator initialized');
+    signalLogger.info('SignalGenerator initialized v3.3-community');
   }
 
-  /**
-   * Analyze a single symbol across timeframes — with strict timeouts and full trace logging
-   */
   async analyzeSymbol(symbol, force = false) {
     if (!symbol) {
       signalLogger.debug('No symbol provided');
@@ -72,79 +66,53 @@ export class SignalGenerator extends EventEmitter {
     signalLogger.info(`Normalized: ${normalizedSymbol}`);
 
     try {
-      // Fetch 15m with 8s timeout
       signalLogger.info(`[${normalizedSymbol}] Fetching 15m OHLCV...`);
       const m15 = await withTimeout(
-        this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100),
-        8000,
-        `OHLCV 15m ${normalizedSymbol}`
+        this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100), 8000, `OHLCV 15m ${normalizedSymbol}`
       );
       signalLogger.info(`[${normalizedSymbol}] 15m result: ${m15 ? m15.length + ' candles' : 'NULL'}`);
-      
       if (!m15 || m15.length < 20) {
-        signalLogger.info(`[${normalizedSymbol}] FAIL: 15m insufficient data (${m15 ? m15.length : 0} candles, need 20)`);
+        signalLogger.info(`[${normalizedSymbol}] FAIL: 15m insufficient data`);
         return null;
       }
-      
       await sleep(200);
 
-      // Fetch 1h with 8s timeout
       signalLogger.info(`[${normalizedSymbol}] Fetching 1h OHLCV...`);
       const h1 = await withTimeout(
-        this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80),
-        8000,
-        `OHLCV 1h ${normalizedSymbol}`
+        this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80), 8000, `OHLCV 1h ${normalizedSymbol}`
       );
       signalLogger.info(`[${normalizedSymbol}] 1h result: ${h1 ? h1.length + ' candles' : 'NULL'}`);
-      
       if (!h1 || h1.length < 10) {
-        signalLogger.info(`[${normalizedSymbol}] FAIL: 1h insufficient data (${h1 ? h1.length : 0} candles, need 10)`);
+        signalLogger.info(`[${normalizedSymbol}] FAIL: 1h insufficient data`);
         return null;
       }
-      
       await sleep(200);
 
-      // Optional 5m
       let m5 = null;
       try {
         signalLogger.info(`[${normalizedSymbol}] Fetching 5m OHLCV (optional)...`);
-        m5 = await withTimeout(
-          this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100),
-          5000,
-          `OHLCV 5m ${normalizedSymbol}`
-        );
+        m5 = await withTimeout(this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100), 5000, `OHLCV 5m ${normalizedSymbol}`);
         signalLogger.info(`[${normalizedSymbol}] 5m result: ${m5 ? m5.length + ' candles' : 'NULL'}`);
       } catch (e) {
         signalLogger.info(`[${normalizedSymbol}] 5m fetch failed (optional): ${e.message}`);
       }
-      
       await sleep(200);
 
-      // Optional 4h
       let h4 = null;
       try {
         signalLogger.info(`[${normalizedSymbol}] Fetching 4h OHLCV (optional)...`);
-        h4 = await withTimeout(
-          this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50),
-          5000,
-          `OHLCV 4h ${normalizedSymbol}`
-        );
+        h4 = await withTimeout(this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50), 5000, `OHLCV 4h ${normalizedSymbol}`);
         signalLogger.info(`[${normalizedSymbol}] 4h result: ${h4 ? h4.length + ' candles' : 'NULL'}`);
       } catch (e) {
         signalLogger.info(`[${normalizedSymbol}] 4h fetch failed (optional): ${e.message}`);
       }
 
-      // Get price with 5s timeout, 2 retries
       signalLogger.info(`[${normalizedSymbol}] Fetching current price...`);
       let currentPrice = null;
       let retries = 2;
       while (retries > 0 && !currentPrice) {
         try {
-          currentPrice = await withTimeout(
-            this.marketData.getCurrentPrice(normalizedSymbol),
-            5000,
-            `price ${normalizedSymbol}`
-          );
+          currentPrice = await withTimeout(this.marketData.getCurrentPrice(normalizedSymbol), 5000, `price ${normalizedSymbol}`);
         } catch (e) {
           signalLogger.info(`[${normalizedSymbol}] Price fetch attempt failed: ${e.message}`);
         }
@@ -163,15 +131,10 @@ export class SignalGenerator extends EventEmitter {
         return null;
       }
 
-      // Volume check with 5s timeout
       signalLogger.info(`[${normalizedSymbol}] Fetching 24h volume...`);
       let volume24h = 0;
       try {
-        volume24h = await withTimeout(
-          this.marketData.get24hVolume(normalizedSymbol),
-          5000,
-          `volume ${normalizedSymbol}`
-        );
+        volume24h = await withTimeout(this.marketData.get24hVolume(normalizedSymbol), 5000, `volume ${normalizedSymbol}`);
       } catch (e) {
         signalLogger.info(`[${normalizedSymbol}] Volume fetch failed: ${e.message}`);
       }
@@ -182,7 +145,6 @@ export class SignalGenerator extends EventEmitter {
         return null;
       }
 
-      // Run analysis per timeframe
       signalLogger.info(`[${normalizedSymbol}] Running timeframe analysis...`);
       const analysis15m = runTimeframeAnalysis(m15, '15m');
       const analysis1h = runTimeframeAnalysis(h1, '1h');
@@ -196,19 +158,13 @@ export class SignalGenerator extends EventEmitter {
         return null;
       }
 
-      // Multi-timeframe confluence
       signalLogger.info(`[${normalizedSymbol}] Building multi-timeframe confluence...`);
       const multiTimeframe = buildMultiTimeframe(analysis15m, analysis1h, analysis4h);
 
-      // BTC trend filter
       signalLogger.info(`[${normalizedSymbol}] Fetching BTC trend...`);
       let btcTrend = { primary: 'neutral', strength: 0, volatile: false };
       try {
-        btcTrend = await withTimeout(
-          this.marketData.getBTCTrend(),
-          5000,
-          'BTC trend'
-        );
+        btcTrend = await withTimeout(this.marketData.getBTCTrend(), 5000, 'BTC trend');
         signalLogger.info(`[${normalizedSymbol}] BTC trend: ${btcTrend.primary} (strength: ${btcTrend.strength})`);
       } catch (e) {
         signalLogger.info(`[${normalizedSymbol}] BTC trend fetch failed: ${e.message}`);
@@ -216,7 +172,6 @@ export class SignalGenerator extends EventEmitter {
 
       const primary = analysis15m;
 
-      // Detect strategy setup
       signalLogger.info(`[${normalizedSymbol}] Detecting strategy setup...`);
       const setup = this.strategy.detect({
         ...primary,
@@ -231,13 +186,11 @@ export class SignalGenerator extends EventEmitter {
         return null;
       }
 
-      // Validate R:R sanity
       if (setup.rr < CONFIG.RISK.MIN_RR || setup.rr > 10 || !isFinite(setup.rr)) {
         signalLogger.info(`[${normalizedSymbol}] FAIL: R:R ${setup.rr?.toFixed?.(2) || 'invalid'} outside valid range [${CONFIG.RISK.MIN_RR}, 10]`);
         return null;
       }
 
-      // Build complete analysis object
       const fullAnalysis = {
         symbol: normalizedSymbol,
         price: currentPrice,
@@ -253,7 +206,6 @@ export class SignalGenerator extends EventEmitter {
         ohlcv: m15,
       };
 
-      // Calculate confidence score
       signalLogger.info(`[${normalizedSymbol}] Calculating confidence score...`);
       const confidence = this.confidence.calculate(fullAnalysis);
 
@@ -264,7 +216,6 @@ export class SignalGenerator extends EventEmitter {
         `Tier: ${confidence.tier} | Passed: ${confidence.passed}`
       );
 
-      // Apply confidence filter unless forced
       if (!force && !confidence.passed) {
         signalLogger.info(`[${normalizedSymbol}] REJECTED: ${confidence.recommendation}`);
         signalLogger.info(`=== END: ${symbol} [REJECTED] ===`);
@@ -287,20 +238,10 @@ export class SignalGenerator extends EventEmitter {
     }
   }
 
-  /**
-   * Build complete signal object from analysis
-   */
-  
-      /**
-   * Build complete signal object from analysis
-   * FIXED: Correct units, clean symbol names, proper formatting
-   */
   buildSignal(analysis) {
     const { symbol, price, confidence, setup, multiTimeframe, momentum, volume, levels, atr } = analysis;
     
     const currentCapital = CONFIG.CHALLENGE.CURRENT_CAPITAL;
-    
-    // Get streak data from risk manager
     const streakData = this.riskManager.getStreakData();
     const position = calculatePosition(setup, confidence, atr, currentCapital, streakData);
     
@@ -309,62 +250,79 @@ export class SignalGenerator extends EventEmitter {
       return null;
     }
 
-    // Clean symbol for display
     const cleanSymbol = (raw) => {
-      return raw
-        .replace(/:USDT$/, '')
-        .replace(/\/USDT$/, '')
-        .replace(/\/USD$/, '');
+      if (!raw) return 'UNKNOWN';
+      return raw.replace(/:USDT$/, '').replace(/\/USDT$/, '');
     };
     
     const displaySymbol = cleanSymbol(symbol);
-    const fullSymbol = symbol; // Keep original for API calls
+    const fullSymbol = symbol;
 
-    // Challenge progress
     const progress = ((currentCapital - CONFIG.CHALLENGE.START_CAPITAL) / 
                      (CONFIG.CHALLENGE.TARGET - CONFIG.CHALLENGE.START_CAPITAL)) * 100;
 
-    // Format price based on magnitude (prevent $0.0000 for sub-penny coins)
     const fmtPrice = (p) => {
-      if (p >= 1000) return p.toFixed(2);
-      if (p >= 1) return p.toFixed(4);
-      if (p >= 0.01) return p.toFixed(6);
-      if (p >= 0.0001) return p.toFixed(8);
-      return p.toExponential(4);
+      if (p === undefined || p === null) return 'N/A';
+      const val = parseFloat(p);
+      if (isNaN(val)) return 'N/A';
+      if (val >= 10000) return val.toFixed(0);
+      if (val >= 1000) return val.toFixed(1);
+      if (val >= 100) return val.toFixed(2);
+      if (val >= 1) return val.toFixed(4);
+      if (val >= 0.01) return val.toFixed(6);
+      if (val >= 0.0001) return val.toFixed(8);
+      return val.toExponential(4);
     };
 
-    // Execution steps
+    const isLong = setup.direction === 'bullish';
+    const entry = setup.entry;
+    const stop = setup.stop;
+    const target = setup.target;
+    
+    const scalePrice = entry + (target - entry) * 0.5;
+    
+    let takeProfit2 = setup.takeProfit2;
+    if (!takeProfit2 && setup.rr >= 2.5) {
+      const tpDistance = Math.abs(target - entry);
+      takeProfit2 = isLong 
+        ? entry + (tpDistance * 1.5)
+        : entry - (tpDistance * 1.5);
+    }
+
+    if (takeProfit2) {
+      const tp2Correct = isLong ? takeProfit2 > target : takeProfit2 < target;
+      if (!tp2Correct) {
+        signalLogger.warn(`TP2 direction wrong for ${displaySymbol}, fixing`);
+        takeProfit2 = isLong 
+          ? target + Math.abs(target - entry) * 0.5
+          : target - Math.abs(target - entry) * 0.5;
+      }
+    }
+
     const steps = [
-      `Enter ${setup.timeframe} on ${setup.direction === 'bullish' ? 'green' : 'red'} candle close`,
-      `Stop: $${fmtPrice(setup.stop)} (${((Math.abs(setup.stop - setup.entry) / setup.entry) * 100).toFixed(2)}%)`,
-      `Target 1: $${fmtPrice(setup.target)} (R:R ${setup.rr.toFixed(2)}:1)`,
+      `Enter ${setup.timeframe} on ${isLong ? 'green' : 'red'} candle close`,
+      `Stop: $${fmtPrice(stop)} (${((Math.abs(stop - entry) / entry) * 100).toFixed(2)}%)`,
+      `Target 1: $${fmtPrice(target)} (R:R ${setup.rr.toFixed(2)}:1)`,
     ];
 
-    // Scale-out plan
-    let scalePrice = null;
     if (setup.rr >= 2) {
-      scalePrice = setup.entry + (setup.target - setup.entry) * 0.5 * (setup.direction === 'bullish' ? 1 : -1);
       steps.push(`Scale 50% at $${fmtPrice(scalePrice)} (1:1 R:R), move SL to breakeven`);
     }
 
-    // Second take profit
-    let takeProfit2 = null;
-    if (setup.rr >= 2.5) {
-      takeProfit2 = setup.entry + (setup.target - setup.entry) * 0.75 * (setup.direction === 'bullish' ? 1 : -1);
+    if (takeProfit2) {
+      steps.push(`Target 2: $${fmtPrice(takeProfit2)} (full close)`);
     }
 
-    // Determine max hold time based on setup type
-    const maxHold = setup.timeframe?.includes('5M') ? '2-4 hours' : '4-24 hours';
+    const maxHold = setup.maxHold || (setup.timeframe?.includes('5M') ? '2-4 hours' : '8-24 hours');
 
     return {
       id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
-      validUntil: new Date(Date.now() + 24 * 3600000).toISOString(), // 24h validity
+      validUntil: new Date(Date.now() + 24 * 3600000).toISOString(),
       
-      // Symbol fields
-      symbol: fullSymbol,           // PEPE/USDT:USDT (for API)
-      displaySymbol,                // PEPE (for humans)
-      direction: setup.direction === 'bullish' ? 'LONG' : 'SHORT',
+      symbol: fullSymbol,
+      displaySymbol,
+      direction: isLong ? 'LONG' : 'SHORT',
       strategy: setup.type,
       quality: setup.quality,
       
@@ -379,26 +337,23 @@ export class SignalGenerator extends EventEmitter {
       },
 
       entry: {
-        price: setup.entry,
-        zone: {
-          min: setup.entry * 0.998,
-          max: setup.entry * 1.002,
-        },
+        price: entry,
+        zone: { min: entry * 0.998, max: entry * 1.002 },
       },
       
-      stopLoss: setup.stop,
-      takeProfit: setup.target,
+      stopLoss: stop,
+      takeProfit: target,
       takeProfit2,
+      scalePrice,
       riskReward: setup.rr.toFixed(2),
       
-      // FIXED: Correct position fields
       position: {
         riskPct: position.riskPct,
         riskAmount: position.riskAmount,
         leverage: position.leverage,
-        baseQty: position.baseQty,           // FOR EXCHANGE API (e.g. 0.0004 BTC)
-        notionalValue: position.notionalValue, // FOR HUMAN READING (e.g. $400 USDT)
-        margin: position.margin,              // Capital required
+        baseQty: position.baseQty,
+        notionalValue: position.notionalValue,
+        margin: position.margin,
         estProfit: position.estProfit,
         estLoss: position.estLoss,
         unit: position.unit,
@@ -406,20 +361,20 @@ export class SignalGenerator extends EventEmitter {
       },
 
       analysis: {
-        trend: multiTimeframe.primary.primary,
-        trendStrength: multiTimeframe.primary.strength,
-        trendAlignment: multiTimeframe.alignment,
-        rsi: momentum.rsi.value.toFixed(1),
-        rsiCondition: momentum.rsi.condition,
-        macdTrend: momentum.macd.trend,
-        macdCrossover: momentum.macd.crossover,
-        volumeRatio: volume.ratio.toFixed(2),
-        volumeTrend: volume.trend,
-        support: levels.support ? fmtPrice(levels.support) : 'N/A',
-        resistance: levels.resistance ? fmtPrice(levels.resistance) : 'N/A',
-        supportTouches: levels.supportTouches,
-        resistanceTouches: levels.resistanceTouches,
-        structure: setup.context || multiTimeframe.primary.primary,
+        trend: multiTimeframe?.primary?.primary || 'neutral',
+        trendStrength: multiTimeframe?.primary?.strength || 0,
+        trendAlignment: multiTimeframe?.alignment || 'single',
+        rsi: momentum?.rsi?.value?.toFixed(1) || '50.0',
+        rsiCondition: momentum?.rsi?.condition || 'neutral',
+        macdTrend: momentum?.macd?.trend || 'neutral',
+        macdCrossover: momentum?.macd?.crossover || 'none',
+        volumeRatio: volume?.ratio?.toFixed(2) || '1.00',
+        volumeTrend: volume?.trend || 'normal',
+        support: levels?.support ? fmtPrice(levels.support) : 'N/A',
+        resistance: levels?.resistance ? fmtPrice(levels.resistance) : 'N/A',
+        supportTouches: levels?.supportTouches || 0,
+        resistanceTouches: levels?.resistanceTouches || 0,
+        structure: setup.context || multiTimeframe?.primary?.primary || 'neutral',
         atr: atr?.percent ? atr.percent.toFixed(2) + '%' : 'N/A',
       },
 
@@ -442,14 +397,11 @@ export class SignalGenerator extends EventEmitter {
       meta: {
         scannedAt: new Date().toISOString(),
         dataQuality: 'multi-timeframe',
-        version: '3.2-dynamic',
+        version: '3.3-community',
       },
     };
-        }
-  
-  /**
-   * Generate signal for symbol with full risk checks
-   */
+  }
+
   async generateSignal(symbol, force = false) {
     signalLogger.info(`Generating signal: ${symbol} (force=${force})`);
 
@@ -469,11 +421,30 @@ export class SignalGenerator extends EventEmitter {
       return null;
     }
 
-    // CRITICAL: Mark as scanned BEFORE analysis to prevent concurrent re-entry
     this._markScanned(symbol);
 
     const analysis = await this.analyzeSymbol(symbol, force);
     if (!analysis) return null;
+
+    // COMMUNITY GATE: Minimum standards for public signals
+    const MIN_CONFIDENCE = 50;
+    const MIN_VOLUME = 0.8;
+    const MIN_RR = 1.8;
+
+    if (!force && analysis.confidence.score < MIN_CONFIDENCE) {
+      signalLogger.info(`[${symbol}] REJECTED: Confidence ${analysis.confidence.score}% < ${MIN_CONFIDENCE}% (community standard)`);
+      return null;
+    }
+    
+    if (!force && analysis.volume?.ratio < MIN_VOLUME) {
+      signalLogger.info(`[${symbol}] REJECTED: Volume ${analysis.volume.ratio}x < ${MIN_VOLUME}x (dead coin)`);
+      return null;
+    }
+    
+    if (!force && analysis.setup.rr < MIN_RR) {
+      signalLogger.info(`[${symbol}] REJECTED: R:R ${analysis.setup.rr} < ${MIN_RR} (poor reward)`);
+      return null;
+    }
 
     const signal = this.buildSignal(analysis);
     if (!signal) return null;
@@ -507,10 +478,7 @@ export class SignalGenerator extends EventEmitter {
     return signal;
   }
 
-  /**
-   * Start continuous market scanning — SEQUENTIAL, not parallel
-   */
-  async startContinuousScanning() {
+async startContinuousScanning() {
     if (this.isScanning) {
       signalLogger.warn('Scanning already active');
       return;
@@ -605,11 +573,7 @@ export class SignalGenerator extends EventEmitter {
     this.emit('scanning_stopped');
   }
 
-  /**
-   * Handle signal closure from monitor
-   */
-  
-        _onSignalClose(signalId, result, exitPrice) {
+  _onSignalClose(signalId, result, exitPrice) {
     const signal = this.activeSignals.get(signalId);
     if (!signal) {
       signalLogger.warn(`Close callback for unknown signal: ${signalId.slice(0, 8)}`);
@@ -646,12 +610,10 @@ export class SignalGenerator extends EventEmitter {
     this.activeSignals.delete(signalId);
   }
 
-  // ─── INTERNAL HELPERS ──────────────────────────────────────
-
   _wasRecentlyScanned(symbol) {
     const lastScan = this._recentScans.get(symbol);
     if (!lastScan) return false;
-    return Date.now() - lastScan < 120000;
+    return Date.now() - lastScan < 600000; // 10 minutes
   }
 
   _markScanned(symbol) {
