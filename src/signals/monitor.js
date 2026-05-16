@@ -1,19 +1,18 @@
 // ==========================================
 // SIGNAL MONITOR MODULE
-// Tracks active signals, handles SL/TP/expiration
+// FIXED: Candle-close validation, minimum hold time, graduated exits
 // ==========================================
 
 import { signalLogger } from '../utils/logger.js';
 
-/**
- * Monitor a single signal's lifecycle
- */
 export class SignalMonitor {
   constructor(marketData, onClose) {
     this.marketData = marketData;
     this.onClose = onClose;
     this.intervals = new Map();
     this.expiryTimers = new Map();
+    this.tp1State = new Map(); // Track if TP1 was hit and SL moved to breakeven
+    this.minHoldMs = 5 * 60 * 1000; // 5 minutes minimum hold
   }
 
   /**
@@ -25,73 +24,138 @@ export class SignalMonitor {
       return;
     }
 
-    signalLogger.info(`Monitor started: ${signal.symbol} ${signal.direction}`);
+    signalLogger.info(`[${signal.symbol}] Monitor started — min hold ${this.minHoldMs/60000}min, max hold ${signal.execution?.maxHold || '4-8 hours'}`);
 
     let checkCount = 0;
     const interval = setInterval(async () => {
       try {
         checkCount++;
-        const currentPrice = await this.marketData.getCurrentPrice(signal.symbol);
+        
+        // Get last CLOSED candle price, not live tick
+        const timeframe = this._getTimeframe(signal);
+        const lastCandle = await this._getLastClosedCandle(signal.symbol, timeframe);
+        const currentPrice = lastCandle ? lastCandle[4] : await this.marketData.getCurrentPrice(signal.symbol);
+        
         if (!currentPrice) return;
 
-        // Progress log every 10 checks (~50s)
+        const elapsed = Date.now() - new Date(signal.timestamp).getTime();
+
+        // MINIMUM HOLD: Cannot exit before 5 minutes (ignore wicks/spikes)
+        if (elapsed < this.minHoldMs) {
+          if (checkCount % 6 === 0) { // Log every 30s during hold
+            signalLogger.info(`[${signal.symbol}] Holding... ${(elapsed/1000).toFixed(0)}s / ${this.minHoldMs/1000}s`);
+          }
+          return;
+        }
+
+        // Progress log every 10 checks (~5min with 30s interval)
         if (checkCount % 10 === 0) {
           const pnlPct = signal.direction === 'LONG' 
             ? ((currentPrice - signal.entry.price) / signal.entry.price) * 100
             : ((signal.entry.price - currentPrice) / signal.entry.price) * 100;
-          signalLogger.info(`${signal.symbol} | Check #${checkCount} | P&L: ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
+          signalLogger.info(`[${signal.symbol}] Check #${checkCount} | Price: $${currentPrice.toFixed(4)} | P&L: ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
         }
 
-        // Check exits
-        const result = this._checkExit(signal, currentPrice);
+        // Check exits with candle-close price
+        const result = this._checkExit(signal, currentPrice, elapsed);
         if (result) {
           this.stop(signal.id);
           this.onClose(signal.id, result, currentPrice);
         }
 
       } catch (err) {
-        signalLogger.error(`Monitor error: ${err.message}`);
+        signalLogger.error(`[${signal.symbol}] Monitor error: ${err.message}`);
       }
-    }, 5000);
+    }, 30000); // CHANGED: 30s interval instead of 5s (reduce API calls, smooth noise)
 
     this.intervals.set(signal.id, interval);
 
-    // Auto-expire after 4 hours
+    // Auto-expire based on signal's maxHold field
+    const maxHoldHours = signal.execution?.maxHold?.includes('2-4') ? 4 : 8;
+    const expiryMs = maxHoldHours * 3600000;
+    
     const expiryTimer = setTimeout(() => {
       if (this.intervals.has(signal.id)) {
-        signalLogger.info(`Signal expired: ${signal.id.slice(0, 8)}`);
+        signalLogger.info(`[${signal.symbol}] Signal expired after ${maxHoldHours}h`);
         this.stop(signal.id);
+        this.onClose(signal.id, 'time_expired', null);
       }
-    }, 4 * 3600000);
+    }, expiryMs);
 
     this.expiryTimers.set(signal.id, expiryTimer);
   }
 
   /**
-   * Check if signal hit SL, TP1, or TP2
+   * Get appropriate timeframe for candle-close checks
    */
-  _checkExit(signal, currentPrice) {
+  _getTimeframe(signal) {
+    if (signal.execution?.maxHold?.includes('2-4')) return '5m';
+    return '15m';
+  }
+
+  /**
+   * Fetch last fully closed candle
+   */
+  async _getLastClosedCandle(symbol, timeframe) {
+    try {
+      const ohlcv = await this.marketData.fetchOHLCV(symbol, timeframe, 2);
+      if (!ohlcv || ohlcv.length < 2) return null;
+      return ohlcv[ohlcv.length - 2]; // [timestamp, open, high, low, close, volume]
+    } catch (err) {
+      signalLogger.debug(`[${symbol}] Candle fetch failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Check if signal hit SL, TP1, or TP2
+   * FIXED: Graduated exits — TP1 scales out, TP2 full close
+   */
+  _checkExit(signal, closePrice, elapsed) {
     const isLong = signal.direction === 'LONG';
+    const tp1Hit = this.tp1State.get(signal.id);
 
-    // Stop loss
+    // Stop loss (always check)
     const hitSL = isLong 
-      ? currentPrice <= signal.stopLoss 
-      : currentPrice >= signal.stopLoss;
-    if (hitSL) return 'stop_loss';
-
-    // Take profit 2 (higher priority)
-    if (signal.takeProfit2) {
-      const hitTP2 = isLong 
-        ? currentPrice >= signal.takeProfit2 
-        : currentPrice <= signal.takeProfit2;
-      if (hitTP2) return 'take_profit_2';
+      ? closePrice <= signal.stopLoss 
+      : closePrice >= signal.stopLoss;
+    
+    if (hitSL) {
+      signalLogger.info(`[${signal.symbol}] STOP LOSS hit at $${closePrice.toFixed(4)}`);
+      return 'stop_loss';
     }
 
-    // Take profit 1
-    const hitTP = isLong 
-      ? currentPrice >= signal.takeProfit 
-      : currentPrice <= signal.takeProfit;
-    if (hitTP) return 'take_profit';
+    // Take profit 2 (full close) — only after TP1 was hit
+    if (tp1Hit && signal.takeProfit2) {
+      const hitTP2 = isLong 
+        ? closePrice >= signal.takeProfit2 
+        : closePrice <= signal.takeProfit2;
+      if (hitTP2) {
+        signalLogger.info(`[${signal.symbol}] TAKE PROFIT 2 hit at $${closePrice.toFixed(4)}`);
+        return 'take_profit_2';
+      }
+    }
+
+    // Take profit 1 (scale out 50%, move SL to breakeven, continue monitoring)
+    const hitTP1 = isLong 
+      ? closePrice >= signal.takeProfit 
+      : closePrice <= signal.takeProfit;
+    
+    if (hitTP1 && !tp1Hit) {
+      signalLogger.info(`[${signal.symbol}] TAKE PROFIT 1 hit at $${closePrice.toFixed(4)} — scaling out 50%, SL → breakeven`);
+      this.tp1State.set(signal.id, true);
+      
+      // Emit partial close event for bot notification
+      this.emit?.('tp1_hit', { 
+        signalId: signal.id, 
+        symbol: signal.symbol, 
+        price: closePrice,
+        pnl: signal.position.estProfit * 0.5 
+      });
+      
+      // Continue monitoring for TP2 — do NOT return result yet
+      return null;
+    }
 
     return null;
   }
@@ -111,6 +175,8 @@ export class SignalMonitor {
       clearTimeout(timer);
       this.expiryTimers.delete(signalId);
     }
+
+    this.tp1State.delete(signalId);
   }
 
   /**
@@ -126,6 +192,8 @@ export class SignalMonitor {
       clearTimeout(timer);
     }
     this.expiryTimers.clear();
+    
+    this.tp1State.clear();
   }
 
   getActiveCount() {
