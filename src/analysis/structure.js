@@ -99,5 +99,4 @@ export function detectLiquiditySweep(ohlcv, levels) {
     level: bullishSweep || weakBullish ? levels.support : 
            (bearishSweep || weakBearish ? levels.resistance : null),
   };
-    }
-    
+}
