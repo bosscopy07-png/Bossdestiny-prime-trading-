@@ -613,7 +613,7 @@ async startContinuousScanning() {
   _wasRecentlyScanned(symbol) {
     const lastScan = this._recentScans.get(symbol);
     if (!lastScan) return false;
-    return Date.now() - lastScan < 600000; // 10 minutes
+    return Date.now() - lastScan < 120000; // 10 minutes
   }
 
   _markScanned(symbol) {
