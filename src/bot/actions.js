@@ -1,12 +1,16 @@
 // ==========================================
 // BOT ACTION HANDLERS
-// Inline keyboard callback handlers
+// Inline keyboard callback handlers — 2-Page Signal Format
+// VERSION: 3.3-community
 // ==========================================
 
 import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
-import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
+import { formatSignalPage1, formatSignalPage2, getSignalButtons, formatCloseMessage, getCloseButtons, formatDashboard } from '../signals/formatter.js';
+
+// Store active signals for page navigation (use Redis in production)
+const activeSignalMessages = new Map();
 
 /**
  * Register all action handlers
@@ -22,6 +26,8 @@ export function registerActions(bot, generator, marketData, userSettings) {
       botLogger.debug({ err: err.message }, 'answerCbQuery failed');
     }
   };
+
+  // ─── DASHBOARD ────────────────────────────────────────────
 
   bot.action('DASHBOARD', async (ctx) => {
     try {
@@ -63,6 +69,8 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
+  // ─── GET SIGNAL (Manual Scan) ─────────────────────────────
+
   bot.action('GET_SIGNAL', async (ctx) => {
     try {
       if (!isReady()) {
@@ -71,46 +79,141 @@ export function registerActions(bot, generator, marketData, userSettings) {
       }
 
       await safeAnswer(ctx, '🔍 Scanning...');
-      await ctx.reply('🔍 Scanning top pairs for qualified setups...');
+      const scanningMsg = await ctx.reply('🔍 Scanning top pairs for qualified setups...');
       
       const symbols = await marketData.getTopVolumeSymbols(10);
+      let found = false;
       
       for (const symbol of symbols.slice(0, 5)) {
         const signal = await generator.generateSignal(symbol);
         if (signal) {
-          await ctx.reply(formatSignalMessage(signal), {
+          // Store for page navigation
+          activeSignalMessages.set(signal.id, signal);
+          
+          await ctx.deleteMessage(scanningMsg.message_id).catch(() => {});
+          
+          // Send Page 1 with navigation buttons
+          await ctx.reply(formatSignalPage1(signal), {
             parse_mode: 'HTML',
+            disable_web_page_preview: true,
             ...Markup.inlineKeyboard([
-              [Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)],
-              [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+              [
+                Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
+                Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
+              ],
+              [
+                Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`),
+                Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)
+              ],
+              [
+                Markup.button.callback('📊 Dashboard', 'DASHBOARD')
+              ]
             ])
           });
+          
+          found = true;
           return;
         }
         await sleep(1500);
       }
       
-      await ctx.reply([
-        '❌ <b>No qualified setups found</b>',
-        '',
-        'Markets are consolidating or signals don\'t meet quality thresholds.',
-        '',
-        'Try /signal for a broader scan, or enable auto-alerts.',
-        '',
-        'Quality &gt; Quantity. Patience pays.'
-      ].join('\n'), {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('🔔 Auto-Alerts', 'ENABLE_ALERTS')],
-          [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
-        ])
-      });
+      if (!found) {
+        await ctx.deleteMessage(scanningMsg.message_id).catch(() => {});
+        await ctx.reply([
+          '❌ <b>No qualified setups found</b>',
+          '',
+          'Markets are consolidating or signals don\'t meet quality thresholds.',
+          '',
+          'Quality &gt; Quantity. Patience pays.'
+        ].join('\n'), {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🔔 Auto-Alerts', 'ENABLE_ALERTS')],
+            [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+          ])
+        });
+      }
+      
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Error in GET_SIGNAL action');
       await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Signal scan failed. Please try again later.');
     }
   });
+
+  // ─── PAGE NAVIGATION (◀️ ▶️) ──────────────────────────────
+
+  bot.action(/PAGE1_(.+)/, async (ctx) => {
+    try {
+      const signalId = ctx.match[1];
+      const signal = activeSignalMessages.get(signalId);
+      
+      if (!signal) {
+        await safeAnswer(ctx, '⏳ Signal expired');
+        return;
+      }
+      
+      await safeAnswer(ctx);
+      
+      await ctx.editMessageText(formatSignalPage1(signal), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
+            Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
+          ],
+          [
+            Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`),
+            Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)
+          ],
+          [
+            Markup.button.callback('📊 Dashboard', 'DASHBOARD')
+          ]
+        ])
+      });
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Error in PAGE1 action');
+      await safeAnswer(ctx, 'Error');
+    }
+  });
+
+  bot.action(/PAGE2_(.+)/, async (ctx) => {
+    try {
+      const signalId = ctx.match[1];
+      const signal = activeSignalMessages.get(signalId);
+      
+      if (!signal) {
+        await safeAnswer(ctx, '⏳ Signal expired');
+        return;
+      }
+      
+      await safeAnswer(ctx);
+      
+      await ctx.editMessageText(formatSignalPage2(signal), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
+            Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
+          ],
+          [
+            Markup.button.callback('📊 Chart', 'url', `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(signal.symbol)}`),
+            Markup.button.callback('⚡ Trade Now', 'url', CONFIG?.REFERRAL?.LINK || '#')
+          ],
+          [
+            Markup.button.callback('📊 Dashboard', 'DASHBOARD')
+          ]
+        ])
+      });
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Error in PAGE2 action');
+      await safeAnswer(ctx, 'Error');
+    }
+  });
+
+  // ─── START/STOP SCANNING ──────────────────────────────────
 
   bot.action('START_LIVE', async (ctx) => {
     try {
@@ -125,9 +228,9 @@ export function registerActions(bot, generator, marketData, userSettings) {
       }
 
       await safeAnswer(ctx, '🔥 Starting...');
-      await ctx.reply('🔥 Live scanning activated');
+      await ctx.reply('🔥 Live scanning activated. Signals will auto-send when qualified.');
       
-      // Fire and forget — startContinuousScanning never returns
+      // Start continuous scanning (fire and forget)
       generator.startContinuousScanning().catch(err => {
         botLogger.error({ err: err.message, stack: err.stack }, 'Scanner crashed from START_LIVE');
       });
@@ -155,15 +258,44 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
+  // ─── STATS ────────────────────────────────────────────────
+
   bot.action('STATS', async (ctx) => {
     try {
       await safeAnswer(ctx);
-      await ctx.reply('📊 Use /stats command for full statistics');
+      
+      const stats = generator.getStats();
+      const riskStatus = generator.riskManager.getStatus();
+      
+      await ctx.reply([
+        '📊 <b>System Statistics</b>',
+        '',
+        `Scan Cycles: ${stats.scansCompleted || 0}`,
+        `Signals Today: ${stats.signalsToday || 0}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`,
+        `Active Signals: ${stats.activeSignals || 0}`,
+        '',
+        '<b>Risk Status:</b>',
+        `Cooldown: ${riskStatus.cooldownLevel > 0 ? `🔴 Level ${riskStatus.cooldownLevel}` : '🟢 Inactive'}`,
+        `Win Streak: ${riskStatus.winStreak || 0}`,
+        `Loss Streak: ${riskStatus.lossStreak || 0}`,
+        `Daily P&L: $${riskStatus.dailyPnL?.toFixed(2) || '0.00'}`,
+        `Win Rate: ${riskStatus.winRate || 0}%`,
+        '',
+        `Last Scan: ${stats.lastScan ? new Date(stats.lastScan).toLocaleTimeString() : 'Never'}`
+      ].join('\n'), {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+        ])
+      });
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Error in STATS action');
       await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to load stats.');
     }
   });
+
+  // ─── SETTINGS ─────────────────────────────────────────────
 
   bot.action('SETTINGS', async (ctx) => {
     try {
@@ -183,7 +315,7 @@ export function registerActions(bot, generator, marketData, userSettings) {
           [Markup.button.callback('60% (Balanced)', 'SET_CONF_60')],
           [Markup.button.callback('70% (Conservative)', 'SET_CONF_70')],
           [Markup.button.callback('80% (Strict)', 'SET_CONF_80')],
-          [Markup.button.callback('🔙 Back', 'MAIN_MENU')]
+          [Markup.button.callback('🔙 Back', 'DASHBOARD')]
         ])
       });
     } catch (err) {
@@ -209,27 +341,13 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  bot.action('MAIN_MENU', async (ctx) => {
-    try {
-      await safeAnswer(ctx);
-      await ctx.reply('🏠 <b>Main Menu</b>', {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')],
-          [Markup.button.callback('📈 Stats', 'STATS'), Markup.button.callback('⚙️ Settings', 'SETTINGS')]
-        ])
-      });
-    } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in MAIN_MENU action');
-      await safeAnswer(ctx, 'Error');
-    }
-  });
+  // ─── TAKEN / SKIPPED ──────────────────────────────────────
 
   bot.action(/TAKEN_(.+)/, async (ctx) => {
     try {
       const signalId = ctx.match[1];
       await safeAnswer(ctx, '✅ Marked as taken');
-      await ctx.reply('📝 Signal marked as TAKEN. Trade with discipline!');
+      await ctx.reply('📝 Signal marked as TAKEN. Trade with discipline!\n\n⚠️ Remember: This is educational only. Manage your risk.');
       botLogger.info(`Signal ${signalId.slice(0, 8)} taken by ${ctx.from.id}`);
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Error in TAKEN action');
@@ -248,6 +366,8 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
+  // ─── ENABLE ALERTS ────────────────────────────────────────
+
   bot.action('ENABLE_ALERTS', async (ctx) => {
     try {
       await safeAnswer(ctx);
@@ -263,8 +383,76 @@ export function registerActions(bot, generator, marketData, userSettings) {
     }
   });
 
-  botLogger.info('Action handlers registered');
+  // ─── AUTO-SIGNAL LISTENER (from continuous scanning) ─────
+
+  generator.on('signal', async (signal) => {
+    try {
+      // Store for navigation
+      activeSignalMessages.set(signal.id, signal);
+      
+      // Broadcast to all users with notifications enabled
+      for (const [userId, settings] of userSettings.entries()) {
+        if (settings.notifications !== false && signal.confidence.score >= (settings.minConfidence || 60)) {
+          try {
+            await bot.telegram.sendMessage(userId, formatSignalPage1(signal), {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              ...Markup.inlineKeyboard([
+                [
+                  Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
+                  Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
+                ],
+                [
+                  Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`),
+                  Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)
+                ]
+              ])
+            });
+          } catch (err) {
+            botLogger.debug({ err: err.message, userId }, 'Failed to send auto-signal');
+          }
+        }
+      }
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Error broadcasting signal');
+    }
+  });
+
+  // ─── SIGNAL CLOSED LISTENER ───────────────────────────────
+
+  generator.on('signal_closed', async ({ signal, result, exitPrice, pnl, pnlPct }) => {
+    try {
+      // Remove from active
+      activeSignalMessages.delete(signal.id);
+      
+      // Broadcast close to all users who received the signal
+      for (const [userId, settings] of userSettings.entries()) {
+        if (settings.notifications !== false) {
+          try {
+            await bot.telegram.sendMessage(userId, formatCloseMessage(signal, result, exitPrice, pnl, pnlPct), {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              ...Markup.inlineKeyboard([
+                [
+                  Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
+                  Markup.button.callback('🎯 New Signal', 'GET_SIGNAL')
+                ]
+              ])
+            });
+          } catch (err) {
+            botLogger.debug({ err: err.message, userId }, 'Failed to send close message');
+          }
+        }
+      }
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Error broadcasting close');
+    }
+  });
+
+  botLogger.info('Action handlers registered (v3.3-community)');
 }
+
+// ─── HELPERS ───────────────────────────────────────────────
 
 function isAdmin(ctx) {
   return CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
@@ -272,5 +460,9 @@ function isAdmin(ctx) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-    }
-                       
+}
+
+// ─── EXPORTS ───────────────────────────────────────────────
+
+export { activeSignalMessages };
+          
