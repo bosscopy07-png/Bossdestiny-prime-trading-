@@ -13,10 +13,8 @@ import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
  */
 export function registerCommands(bot, generator, marketData) {
   
-  // Helper: check if market data is ready for operations
   const isReady = () => marketData?.isRunning === true && marketData?.exchange != null;
 
-  // /start — Welcome
   bot.command('start', async (ctx) => {
     try {
       botLogger.info(`User started: ${ctx.from.id}`);
@@ -40,10 +38,7 @@ export function registerCommands(bot, generator, marketData) {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
-            Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')
-          ]
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')]
         ])
       });
     } catch (err) {
@@ -52,12 +47,9 @@ export function registerCommands(bot, generator, marketData) {
     }
   });
 
-  // /dashboard — Challenge progress
   bot.command('dashboard', async (ctx) => {
     try {
-      if (!isReady()) {
-        return ctx.reply('⏳ System initializing, please wait...');
-      }
+      if (!isReady()) return ctx.reply('⏳ System initializing, please wait...');
       
       const stats = generator.getStats();
       const text = formatDashboard(stats, marketData, CONFIG.CHALLENGE);
@@ -83,12 +75,9 @@ export function registerCommands(bot, generator, marketData) {
     }
   });
 
-  // /signal — Manual scan
   bot.command('signal', async (ctx) => {
     try {
-      if (!isReady()) {
-        return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
-      }
+      if (!isReady()) return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
 
       await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'HTML' });
       
@@ -134,31 +123,26 @@ export function registerCommands(bot, generator, marketData) {
     }
   });
 
-  // /live — Start scanning (admin only)
   bot.command('live', async (ctx) => {
     try {
-      if (!isAdmin(ctx)) {
-        return ctx.reply('⛔ Admin only command');
-      }
-      
-      if (!isReady()) {
-        return ctx.reply('⏳ System not ready yet');
-      }
+      if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only command');
+      if (!isReady()) return ctx.reply('⏳ System not ready yet');
       
       await ctx.reply('🔥 Starting live market scanning...');
-      await generator.startContinuousScanning();
+      
+      // Fire and forget — startContinuousScanning never returns
+      generator.startContinuousScanning().catch(err => {
+        botLogger.error({ err: err.message, stack: err.stack }, 'Scanner crashed from /live');
+      });
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Error in /live command');
       await ctx.reply('⚠️ Failed to start scanning.');
     }
   });
 
-  // /stop — Stop scanning (admin only)
   bot.command('stop', async (ctx) => {
     try {
-      if (!isAdmin(ctx)) {
-        return ctx.reply('⛔ Admin only command');
-      }
+      if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only command');
       
       generator.stopScanning();
       await ctx.reply('⏹️ Scanning stopped.');
@@ -168,14 +152,10 @@ export function registerCommands(bot, generator, marketData) {
     }
   });
 
-  // /diagnose — Show near-misses (admin only)
   bot.command('diagnose', async (ctx) => {
     try {
       if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only');
-      
-      if (!isReady()) {
-        return ctx.reply('⏳ System not ready yet');
-      }
+      if (!isReady()) return ctx.reply('⏳ System not ready yet');
       
       await ctx.reply('🔍 Running diagnostic scan...');
       
@@ -184,7 +164,6 @@ export function registerCommands(bot, generator, marketData) {
       
       for (const symbol of symbols) {
         const analysis = await generator.analyzeSymbol(symbol, true);
-        
         if (analysis) {
           results.push({
             symbol,
@@ -216,7 +195,6 @@ export function registerCommands(bot, generator, marketData) {
     }
   });
 
-  // /stats — System statistics
   bot.command('stats', async (ctx) => {
     try {
       const stats = generator.getStats();
@@ -247,10 +225,6 @@ export function registerCommands(bot, generator, marketData) {
   botLogger.info('Commands registered');
 }
 
-// ==========================================
-// HELPERS
-// ==========================================
-
 function isAdmin(ctx) {
   return CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
 }
@@ -259,9 +233,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Escape HTML special characters to prevent XSS and broken parsing
- */
 function escapeHtml(text) {
   if (typeof text !== 'string') return String(text);
   return text
@@ -269,5 +240,5 @@ function escapeHtml(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-                       }
+                    }
         
