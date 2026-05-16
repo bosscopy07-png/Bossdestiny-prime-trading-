@@ -64,4 +64,4 @@ export function buildMultiTimeframe(primary, higher, fourHour = null) {
     allBullish: [primary, higher, fourHour].every(t => !t || t.trend?.primary === 'bullish'),
     allBearish: [primary, higher, fourHour].every(t => !t || t.trend?.primary === 'bearish'),
   };
-                                }
+}
