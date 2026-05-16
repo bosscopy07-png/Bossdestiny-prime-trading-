@@ -1,119 +1,104 @@
+
 // ==========================================
 // POSITION SIZING MODULE
-// Risk-based sizing with capital protection
-// RELAXED: Tier-aware sizing, R:R-adjusted, safer leverage
+// FIXED: Correct unit separation — base qty vs notional vs margin
 // ==========================================
 
 import { CONFIG } from '../config/index.js';
 import { riskLogger } from '../utils/logger.js';
 
 /**
- * Calculate position parameters from setup and analysis
- * RELAXED: Smoother risk curve, tier-aware, R:R-adjusted
+ * Calculate position parameters
+ * CRITICAL: Returns baseQty for exchange API, notional for human reading, margin for capital check
  */
-export function calculatePosition(setup, confidence, atr, currentCapital) {
-  // ─── BASE RISK PERCENTAGE ───────────────────────────────────
-  // Smooth curve instead of cliffs. Every 5 points = 0.25% risk
-  let riskPct = 0.5 + (confidence.score / 5) * 0.25;
+export function calculatePosition(setup, confidence, atr, currentCapital, streakData = {}) {
+  const { winStreak = 0, lossStreak = 0, dailyPnL = 0 } = streakData;
+
+  // ─── DYNAMIC RISK PERCENTAGE ──────────────────────────────
+  let riskPct = 0.3 + (confidence.score / 100) * 4.7;
   
-  // Tier floor: C+ gets minimum 0.75%, B gets 1.0%, A gets 1.5%+
-  const tierMinimums = { 'D': 0, 'C': 0.5, 'C+': 0.75, 'B': 1.0, 'B+': 1.25, 'A': 1.5, 'A+': 2.0 };
-  const tierMin = tierMinimums[confidence.tier] || 0.5;
-  riskPct = Math.max(riskPct, tierMin);
+  if (winStreak > 0) riskPct += Math.min(winStreak * 0.5, 2.0);
+  if (lossStreak > 0) riskPct -= lossStreak * 0.3;
   
-  // R:R multiplier: Excellent R:R = slightly more risk
   const rr = setup.rr || 1;
-  if (rr >= 3) riskPct *= 1.2;
-  else if (rr >= 2.5) riskPct *= 1.1;
-  else if (rr < 1.5) riskPct *= 0.7;  // Reduce risk for poor R:R
+  const kellyFraction = (rr - 1) / (rr + 1);
+  riskPct *= (0.5 + kellyFraction);
   
-  // Hard cap
-  riskPct = Math.min(riskPct, CONFIG.RISK.MAX_RISK_PER_TRADE_PCT || 3);
-  riskPct = Math.round(riskPct * 100) / 100;  // Round to 2 decimals
+  const dailyBuffer = currentCapital * 0.05;
+  if (dailyPnL > dailyBuffer) riskPct *= 1.1;
+  else if (dailyPnL < -dailyBuffer) riskPct *= 0.7;
+  
+  riskPct = Math.max(0.2, Math.min(riskPct, 8.0));
+  riskPct = Math.round(riskPct * 100) / 100;
 
   const riskAmount = currentCapital * (riskPct / 100);
   const riskPrice = Math.abs(setup.entry - setup.stop);
   
-  if (riskPrice <= 0 || riskPrice / setup.entry > 0.1) {
-    riskLogger.warn(`Invalid risk: stop ${setup.stop}, entry ${setup.entry}, risk% ${(riskPrice/setup.entry*100).toFixed(2)}%`);
+  if (riskPrice <= 0 || riskPrice / setup.entry > 0.15) {
+    riskLogger.warn(`Invalid risk: entry=${setup.entry}, stop=${setup.stop}`);
     return null;
   }
 
-  // Position size in BASE currency (BTC, ETH, etc.)
-  const basePositionSize = riskAmount / riskPrice;
+  // ─── DYNAMIC LEVERAGE ─────────────────────────────────────
+  let leverage = 3 + (confidence.score - 40) * 0.4;
+  const atrPct = atr?.percent || 2;
   
-  // Notional value in QUOTE currency (USDT)
-  const notionalValue = basePositionSize * setup.entry;
+  if (atrPct < 1) leverage *= 1.5;
+  else if (atrPct < 2) leverage *= 1.2;
+  else if (atrPct > 5) leverage *= 0.4;
+  else if (atrPct > 4) leverage *= 0.6;
+  else if (atrPct > 3) leverage *= 0.8;
+  
+  if (rr >= 4) leverage *= 1.4;
+  else if (rr >= 3) leverage *= 1.2;
+  else if (rr >= 2.5) leverage *= 1.1;
+  else if (rr < 1.5) leverage *= 0.5;
+  
+  if (winStreak >= 3) leverage *= 1.2;
+  else if (winStreak >= 2) leverage *= 1.1;
+  if (lossStreak >= 3) leverage *= 0.5;
+  else if (lossStreak >= 2) leverage *= 0.7;
+  
+  leverage = Math.max(1, Math.round(leverage));
 
-  // Leverage calculation
-  const leverage = calculateLeverage(confidence, atr, setup, riskPct);
-
+  // ─── CORRECT UNIT CALCULATION ──────────────────────────────
+  // Base quantity: how many coins to buy/sell
+  const baseQty = riskAmount / riskPrice;
+  
+  // Notional value: baseQty * entry price (USDT exposure)
+  const notionalValue = baseQty * setup.entry;
+  
+  // Margin required: notional / leverage (actual capital locked)
   const margin = notionalValue / leverage;
 
-  // Estimated P&L
-  const priceDiff = Math.abs(setup.target - setup.entry);
-  const estProfit = basePositionSize * priceDiff;
-  const estLoss = riskAmount;
-
-  // Safety check: margin should not exceed 50% of capital
-  if (margin > currentCapital * 0.5) {
-    riskLogger.warn(`Margin $${margin.toFixed(2)} exceeds 50% capital, reducing size`);
-    return null;
+  // SAFETY: Margin must be <= 90% of available capital (leave buffer)
+  if (margin > currentCapital * 0.9) {
+    riskLogger.warn(`Margin $${margin.toFixed(2)} > 90% capital $${currentCapital}, reducing`);
+    // Recalculate leverage to fit margin within 80% capital
+    const maxNotional = currentCapital * 0.8 * leverage;
+    const adjustedLeverage = Math.max(1, Math.floor(notionalValue / (currentCapital * 0.6)));
+    leverage = adjustedLeverage;
   }
+
+  const priceDiff = Math.abs(setup.target - setup.entry);
+  const estProfit = baseQty * priceDiff;
+  const estLoss = riskAmount;
 
   return {
     riskPct,
     riskAmount: riskAmount.toFixed(2),
     leverage,
-    positionSize: basePositionSize.toFixed(6),      // Base units (BTC, ETH)
-    notionalValue: notionalValue.toFixed(2),         // USDT value
-    margin: margin.toFixed(2),
+    baseQty: baseQty.toFixed(6),           // FOR EXCHANGE API: quantity in base units
+    notionalValue: notionalValue.toFixed(2), // FOR HUMAN: USDT exposure
+    margin: (notionalValue / leverage).toFixed(2), // FOR HUMAN: capital required
     estProfit: estProfit.toFixed(2),
     estLoss: estLoss.toFixed(2),
-    unit: 'base',                                    // Clarify what positionSize means
+    unit: 'base',
+    meta: {
+      winStreakApplied: winStreak,
+      lossStreakApplied: lossStreak,
+      kellyFraction: kellyFraction.toFixed(3),
+      atrDiscount: atrPct.toFixed(2) + '%',
+    },
   };
 }
-
-/**
- * Calculate adaptive leverage based on setup quality and volatility
- * RELAXED: Lower max leverage, tier-based caps, R:R bonus
- */
-function calculateLeverage(confidence, atr, setup, riskPct) {
-  let leverage = 10;  // Default lower
-
-  // Base leverage on confidence score (smoother)
-  if (confidence.score >= 80 && atr?.percent < 2) leverage = 25;
-  else if (confidence.score >= 70 && atr?.percent < 2.5) leverage = 20;
-  else if (confidence.score >= 60 && atr?.percent < 3) leverage = 18;
-  else if (confidence.score >= 50 && atr?.percent < 4) leverage = 14;
-  else if (confidence.score >= 40) leverage = 12;
-  else leverage = 10;
-
-  // Tier hard caps — RELAXED but safe
-  const tierCaps = { 'D': 3, 'C': 4, 'C+': 5, 'B': 7, 'B+': 8, 'A': 10, 'A+': 12 };
-  const tierCap = tierCaps[confidence.tier] || 5;
-  leverage = Math.min(leverage, tierCap);
-
-  // R:R bonus: High R:R = more confidence = more leverage
-  const rr = setup.rr || 1;
-  if (rr >= 3) leverage = Math.min(leverage + 2, tierCap);
-  else if (rr >= 2) leverage = Math.min(leverage + 1, tierCap);
-
-  // Volatility caps — strict
-  if (atr?.percent > 6) leverage = Math.min(leverage, 3);
-  else if (atr?.percent > 5) leverage = Math.min(leverage, 4);
-  else if (atr?.percent > 4) leverage = Math.min(leverage, 5);
-  else if (atr?.percent > 3) leverage = Math.min(leverage, 7);
-
-  // Risk percentage cap: High risk% = lower leverage (protect capital)
-  if (riskPct > 2.5) leverage = Math.min(leverage, 5);
-  else if (riskPct > 2.0) leverage = Math.min(leverage, 7);
-
-  // Quality floor
-  if (setup.quality === 'C+' || confidence.tier === 'C+') {
-    leverage = Math.min(leverage, 5);
-  }
-
-  return Math.round(leverage);
-      }
-    
