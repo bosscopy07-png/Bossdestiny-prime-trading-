@@ -32,8 +32,6 @@ export class MarketDataEngine extends EventEmitter {
     marketLogger.info('MarketDataEngine instantiated');
   }
 
-  // ─── SYMBOL WRAPPERS (REQUIRED: exposed for SignalGenerator) ───
-
   normalizeSymbol(symbol) {
     return normalizeUtil(symbol, this.exchange);
   }
@@ -45,8 +43,6 @@ export class MarketDataEngine extends EventEmitter {
   toWsFormat(symbol) {
     return toWsFormatUtil(symbol);
   }
-
-  // ─── INITIALIZATION ─────────────────────────────────────────────
 
   async initialize() {
     marketLogger.info('Initializing MarketDataEngine...');
@@ -120,8 +116,6 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  // ─── WEBSOCKET FEEDS ────────────────────────────────────────────
-
   startWebSocketFeeds() {
     const majorBases = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC'];
     const pairs = majorBases.map(b => `${b}USDT`.toLowerCase());
@@ -180,8 +174,6 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  // ─── OHLCV POLLING ──────────────────────────────────────────────
-
   startOhlcvPolling() {
     marketLogger.info('Starting OHLCV polling...');
 
@@ -236,6 +228,15 @@ export class MarketDataEngine extends EventEmitter {
     setTimeout(poll, 10000);
   }
 
+  async _fetchWithTimeout(fn, ms = 10000, context = 'fetch') {
+    return Promise.race([
+      fn(),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`${context} timeout after ${ms}ms`)), ms)
+      )
+    ]);
+  }
+
   async safeFetchOHLCV(symbol, timeframe, limit = 100) {
     if (!symbol) {
       marketLogger.debug('No symbol provided for OHLCV');
@@ -259,7 +260,11 @@ export class MarketDataEngine extends EventEmitter {
         return null;
       }
 
-      const ohlcv = await this.exchange.fetchOHLCV(validSymbol, timeframe, undefined, limit);
+      const ohlcv = await this._fetchWithTimeout(
+        () => this.exchange.fetchOHLCV(validSymbol, timeframe, undefined, limit),
+        10000,
+        `fetchOHLCV ${validSymbol} ${timeframe}`
+      );
       
       if (!Array.isArray(ohlcv) || ohlcv.length === 0) {
         marketLogger.debug(`Empty OHLCV: ${validSymbol} ${timeframe}`);
@@ -303,8 +308,6 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  // ─── PRICE & VOLUME ─────────────────────────────────────────────
-
   async getCurrentPrice(symbol) {
     if (!symbol) return null;
 
@@ -343,9 +346,6 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  /**
-   * Get top volume symbols with timeout protection
-   */
   async getTopVolumeSymbols(count = 20) {
     marketLogger.info(`Fetching top ${count} volume symbols...`);
 
@@ -364,15 +364,19 @@ export class MarketDataEngine extends EventEmitter {
           if (!market) return false;
           if (market.active === false) return false;
           
-          const isUSDT = market.quote === 'USDT' || 
-                         market.settle === 'USDT' || 
-                         market.symbol?.includes('USDT');
+          const isUSDT = market.settle === 'USDT' || market.quote === 'USDT';
+          const isPerp = market.type === 'swap' || (market.type === 'future' && !market.expiry);
+          const isLinear = market.linear !== false;
           
-          const isPerp = market.type === 'swap' || 
-                         market.type === 'future' ||
-                         market.linear === true;
+          const base = market.base || '';
+          const isMetal = ['XAG', 'XAU', 'GOLD', 'SILVER'].includes(base);
+          const isLeveragedToken = /(3L|3S|5L|5S|UP|DOWN)$/.test(base);
           
-          return isUSDT && isPerp;
+          if (isMetal || isLeveragedToken) return false;
+          
+          const volume = t.quoteVolume || t.baseVolume * t.last || 0;
+          
+          return isUSDT && isPerp && isLinear && volume > CONFIG.TA.MIN_VOLUME_USD;
         })
         .sort((a, b) => (b.quoteVolume || 0) - (a.quoteVolume || 0))
         .slice(0, count);
@@ -380,20 +384,20 @@ export class MarketDataEngine extends EventEmitter {
       const symbols = validTickers.map(t => t.symbol);
       
       if (symbols.length === 0) {
-        marketLogger.warn('No symbols from tickers, using perpetualMarkets fallback');
-        return this.perpetualMarkets.slice(0, count);
+        marketLogger.warn('No symbols passed filter, using fallback');
+        return this.perpetualMarkets
+          .filter(s => !['XAG', 'XAU'].some(bad => s.includes(bad)))
+          .slice(0, count);
       }
 
       marketLogger.info(`Top volumes: ${symbols.slice(0, 10).join(', ')}`);
       return symbols;
 
     } catch (err) {
-      marketLogger.error({ err: err.message, stack: err.stack }, 'Volume fetch failed');
+      marketLogger.error({ err }, 'Volume fetch failed');
       return this.perpetualMarkets.slice(0, count);
     }
   }
-
-  // ─── BTC TREND ──────────────────────────────────────────────────
 
   async getBTCTrend() {
     const btcSymbols = this.perpetualMarkets.filter(s => s.includes('BTC/'));
@@ -413,7 +417,7 @@ export class MarketDataEngine extends EventEmitter {
       }
 
       const closes = h1.map(c => c[4]);
-      const { calculateEMA } = await import('../utils/math.js');
+      const { calculateEMA, calculateATR } = await import('../utils/math.js');
       
       const ema20 = calculateEMA(closes, 20);
       const ema50 = calculateEMA(closes, 50);
@@ -428,7 +432,6 @@ export class MarketDataEngine extends EventEmitter {
       const ema50Val = ema50[ema50.length - 1];
       const ema200Val = ema200?.[ema200.length - 1];
 
-      const { calculateATR } = await import('../utils/math.js');
       const atr = calculateATR(h1, 14);
 
       let primary = 'neutral';
@@ -438,22 +441,17 @@ export class MarketDataEngine extends EventEmitter {
         primary = 'bullish';
         strength = ema200Val ? (current > ema200Val ? 80 : 60) : 60;
       } else if (current < ema20Val && ema20Val < ema50Val) {
-        // FIXED: was ema50Val > ema50Val (always false)
         primary = 'bearish';
         strength = ema200Val ? (current < ema200Val ? 80 : 60) : 60;
       }
 
-      const volatile = atr.percent > 3;
-
-      return { primary, strength, volatile, atr: atr.percent };
+      return { primary, strength, volatile: atr.percent > 3, atr: atr.percent };
 
     } catch (err) {
-      marketLogger.error({ err: err.message, stack: err.stack }, 'BTC trend error');
+      marketLogger.error({ err }, 'BTC trend error');
       return { primary: 'neutral', strength: 0, volatile: false };
     }
   }
-
-  // ─── SHUTDOWN ───────────────────────────────────────────────────
 
   shutdown() {
     marketLogger.info('Shutting down MarketDataEngine...');
@@ -475,28 +473,5 @@ export class MarketDataEngine extends EventEmitter {
 
     marketLogger.info('MarketDataEngine shut down');
   }
-
-  // ─── TIMEOUT UTILITY ────────────────────────────────────────────
-
-  /**
-   * Wrap any promise with a timeout
-   */
-  async _fetchWithTimeout(promiseFn, ms, label) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`${label} timed out after ${ms}ms`));
-      }, ms);
-
-      promiseFn()
-        .then(result => {
-          clearTimeout(timer);
-          resolve(result);
-        })
-        .catch(err => {
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
-  }
-  }
-    
+      }
+        
