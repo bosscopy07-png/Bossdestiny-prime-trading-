@@ -7,7 +7,7 @@
 import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
-import { formatSignalPage1, formatSignalPage2, getSignalButtons, formatCloseMessage, getCloseButtons, formatDashboard } from '../signals/formatter.js';
+import { formatPage1, formatPage2, getSignalButtons, formatClosed, getCloseButtons, formatDashboard } from '../signals/formatter.js';
 
 // Store active signals for page navigation (use Redis in production)
 const activeSignalMessages = new Map();
