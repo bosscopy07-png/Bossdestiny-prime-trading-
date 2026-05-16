@@ -1,12 +1,12 @@
 // ==========================================
 // BOT COMMANDS
-// Telegram command handlers
+// Telegram command handlers — v4.0
 // ==========================================
 
 import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
-import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
+import { formatPage1, formatDashboard } from '../signals/formatter.js';
 
 /**
  * Register all bot commands
@@ -20,7 +20,7 @@ export function registerCommands(bot, generator, marketData) {
       botLogger.info(`User started: ${ctx.from.id}`);
       
       const welcome = [
-        '🎯 <b>SignalAlpha v3.0 — Institutional Signals</b>',
+        '🎯 <b>SignalAlpha v4.0 — Institutional Signals</b>',
         '',
         'Real-time crypto futures analysis with multi-layer scoring.',
         '',
@@ -79,7 +79,7 @@ export function registerCommands(bot, generator, marketData) {
     try {
       if (!isReady()) return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
 
-      await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'HTML' });
+      const scanningMsg = await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'HTML' });
       
       const symbols = await marketData.getTopVolumeSymbols(15);
       let found = false;
@@ -87,11 +87,23 @@ export function registerCommands(bot, generator, marketData) {
       for (const symbol of symbols) {
         const signal = await generator.generateSignal(symbol);
         if (signal) {
-          await ctx.reply(formatSignalMessage(signal), {
+          await ctx.deleteMessage(scanningMsg.message_id).catch(() => {});
+          
+          await ctx.reply(formatPage1(signal), {
             parse_mode: 'HTML',
+            disable_web_page_preview: true,
             ...Markup.inlineKeyboard([
-              [Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)],
-              [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+              [
+                Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
+                Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
+              ],
+              [
+                Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`),
+                Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)
+              ],
+              [
+                Markup.button.callback('📊 Dashboard', 'DASHBOARD')
+              ]
             ])
           });
           found = true;
@@ -101,6 +113,7 @@ export function registerCommands(bot, generator, marketData) {
       }
       
       if (!found) {
+        await ctx.deleteMessage(scanningMsg.message_id).catch(() => {});
         await ctx.reply([
           '❌ <b>No qualified setups found</b>',
           '',
@@ -130,7 +143,6 @@ export function registerCommands(bot, generator, marketData) {
       
       await ctx.reply('🔥 Starting live market scanning...');
       
-      // Fire and forget — startContinuousScanning never returns
       generator.startContinuousScanning().catch(err => {
         botLogger.error({ err: err.message, stack: err.stack }, 'Scanner crashed from /live');
       });
@@ -241,4 +253,4 @@ function escapeHtml(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
         }
-        
+                                                                                                               
