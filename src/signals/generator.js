@@ -290,42 +290,80 @@ export class SignalGenerator extends EventEmitter {
   /**
    * Build complete signal object from analysis
    */
+  
+      /**
+   * Build complete signal object from analysis
+   * FIXED: Correct units, clean symbol names, proper formatting
+   */
   buildSignal(analysis) {
     const { symbol, price, confidence, setup, multiTimeframe, momentum, volume, levels, atr } = analysis;
     
     const currentCapital = CONFIG.CHALLENGE.CURRENT_CAPITAL;
-    const position = calculatePosition(setup, confidence, atr, currentCapital);
+    
+    // Get streak data from risk manager
+    const streakData = this.riskManager.getStreakData();
+    const position = calculatePosition(setup, confidence, atr, currentCapital, streakData);
     
     if (!position) {
       signalLogger.warn('Position calculation failed — rejecting signal');
       return null;
     }
 
+    // Clean symbol for display
+    const cleanSymbol = (raw) => {
+      return raw
+        .replace(/:USDT$/, '')
+        .replace(/\/USDT$/, '')
+        .replace(/\/USD$/, '');
+    };
+    
+    const displaySymbol = cleanSymbol(symbol);
+    const fullSymbol = symbol; // Keep original for API calls
+
+    // Challenge progress
     const progress = ((currentCapital - CONFIG.CHALLENGE.START_CAPITAL) / 
                      (CONFIG.CHALLENGE.TARGET - CONFIG.CHALLENGE.START_CAPITAL)) * 100;
 
+    // Format price based on magnitude (prevent $0.0000 for sub-penny coins)
+    const fmtPrice = (p) => {
+      if (p >= 1000) return p.toFixed(2);
+      if (p >= 1) return p.toFixed(4);
+      if (p >= 0.01) return p.toFixed(6);
+      if (p >= 0.0001) return p.toFixed(8);
+      return p.toExponential(4);
+    };
+
+    // Execution steps
     const steps = [
       `Enter ${setup.timeframe} on ${setup.direction === 'bullish' ? 'green' : 'red'} candle close`,
-      `Stop: $${setup.stop.toFixed(4)} (${((Math.abs(setup.stop - setup.entry) / setup.entry) * 100).toFixed(2)}%)`,
-      `Target 1: $${setup.target.toFixed(4)} (R:R ${setup.rr.toFixed(2)}:1)`,
+      `Stop: $${fmtPrice(setup.stop)} (${((Math.abs(setup.stop - setup.entry) / setup.entry) * 100).toFixed(2)}%)`,
+      `Target 1: $${fmtPrice(setup.target)} (R:R ${setup.rr.toFixed(2)}:1)`,
     ];
 
+    // Scale-out plan
+    let scalePrice = null;
     if (setup.rr >= 2) {
-      const scalePrice = setup.entry + (setup.target - setup.entry) * 0.5 * (setup.direction === 'bullish' ? 1 : -1);
-      steps.push(`Scale 50% at $${scalePrice.toFixed(4)} (1:1 R:R), move SL to breakeven`);
+      scalePrice = setup.entry + (setup.target - setup.entry) * 0.5 * (setup.direction === 'bullish' ? 1 : -1);
+      steps.push(`Scale 50% at $${fmtPrice(scalePrice)} (1:1 R:R), move SL to breakeven`);
     }
 
+    // Second take profit
     let takeProfit2 = null;
     if (setup.rr >= 2.5) {
       takeProfit2 = setup.entry + (setup.target - setup.entry) * 0.75 * (setup.direction === 'bullish' ? 1 : -1);
     }
 
+    // Determine max hold time based on setup type
+    const maxHold = setup.timeframe?.includes('5M') ? '2-4 hours' : '4-24 hours';
+
     return {
       id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
-      validUntil: new Date(Date.now() + 4 * 3600000).toISOString(),
+      validUntil: new Date(Date.now() + 24 * 3600000).toISOString(), // 24h validity
       
-      symbol,
+      // Symbol fields
+      symbol: fullSymbol,           // PEPE/USDT:USDT (for API)
+      displaySymbol,                // PEPE (for humans)
       direction: setup.direction === 'bullish' ? 'LONG' : 'SHORT',
       strategy: setup.type,
       quality: setup.quality,
@@ -353,7 +391,19 @@ export class SignalGenerator extends EventEmitter {
       takeProfit2,
       riskReward: setup.rr.toFixed(2),
       
-      position,
+      // FIXED: Correct position fields
+      position: {
+        riskPct: position.riskPct,
+        riskAmount: position.riskAmount,
+        leverage: position.leverage,
+        baseQty: position.baseQty,           // FOR EXCHANGE API (e.g. 0.0004 BTC)
+        notionalValue: position.notionalValue, // FOR HUMAN READING (e.g. $400 USDT)
+        margin: position.margin,              // Capital required
+        estProfit: position.estProfit,
+        estLoss: position.estLoss,
+        unit: position.unit,
+        meta: position.meta,
+      },
 
       analysis: {
         trend: multiTimeframe.primary.primary,
@@ -365,19 +415,20 @@ export class SignalGenerator extends EventEmitter {
         macdCrossover: momentum.macd.crossover,
         volumeRatio: volume.ratio.toFixed(2),
         volumeTrend: volume.trend,
-        support: levels.support?.toFixed(4) || 'N/A',
-        resistance: levels.resistance?.toFixed(4) || 'N/A',
+        support: levels.support ? fmtPrice(levels.support) : 'N/A',
+        resistance: levels.resistance ? fmtPrice(levels.resistance) : 'N/A',
         supportTouches: levels.supportTouches,
         resistanceTouches: levels.resistanceTouches,
         structure: setup.context || multiTimeframe.primary.primary,
-        atr: atr?.percent?.toFixed(2) + '%' || 'N/A',
+        atr: atr?.percent ? atr.percent.toFixed(2) + '%' : 'N/A',
       },
 
       execution: {
         steps,
         invalidation: setup.invalidation,
         warning: setup.warning || null,
-        maxHold: setup.timeframe.includes('5M') ? '2-4 hours' : '4-8 hours',
+        maxHold,
+        scalePrice: scalePrice ? fmtPrice(scalePrice) : null,
       },
 
       challenge: {
@@ -391,11 +442,11 @@ export class SignalGenerator extends EventEmitter {
       meta: {
         scannedAt: new Date().toISOString(),
         dataQuality: 'multi-timeframe',
-        version: '3.1-institutional',
+        version: '3.2-dynamic',
       },
     };
-  }
-
+        }
+  
   /**
    * Generate signal for symbol with full risk checks
    */
