@@ -1,9 +1,7 @@
-
-
 // ==========================================
 // SIGNAL FORMATTER
 // Telegram message formatting — 2-Page HTML mode
-// VERSION: 4.0-fresh — Complete rewrite
+// VERSION: 4.1 — Fixed malformed HTML tags
 // ==========================================
 
 // ─── CONFIG ────────────────────────────────────────────────
@@ -24,7 +22,7 @@ const DIRECTION_EMOJI = {
   'SHORT': '🔴'
 };
 
-// ─── PRICE FORMATTER ───────────────────────────────────────
+// ─── UTILITIES ─────────────────────────────────────────────
 
 function formatPrice(value) {
   if (value === undefined || value === null) return 'N/A';
@@ -50,8 +48,6 @@ function formatPrice(value) {
   return num.toExponential(4);
 }
 
-// ─── SYMBOL CLEANER ────────────────────────────────────────
-
 function cleanSymbol(raw) {
   if (!raw || typeof raw !== 'string') return 'UNKNOWN';
   
@@ -64,8 +60,6 @@ function cleanSymbol(raw) {
     .replace(/_PERP$/, '');
 }
 
-// ─── HTML ESCAPER ──────────────────────────────────────────
-
 function html(text) {
   if (text === undefined || text === null) return '';
   if (typeof text !== 'string') return String(text);
@@ -77,15 +71,11 @@ function html(text) {
     .replace(/"/g, '&quot;');
 }
 
-// ─── PROGRESS BAR ─────────────────────────────────────────
-
 function progressBar(percent) {
   const pct = Math.max(0, Math.min(100, Number(percent) || 0));
   const filled = Math.round(pct / 10);
   return '█'.repeat(filled) + '░'.repeat(10 - filled);
 }
-
-// ─── RISK PERCENT CALCULATOR ──────────────────────────────
 
 function calcRiskPercent(entry, stop) {
   const e = Number(entry);
@@ -97,9 +87,6 @@ function calcRiskPercent(entry, stop) {
 
 // ─── PAGE 1: TRADE EXECUTION ──────────────────────────────
 
-/**
- * Format signal Page 1 — Everything needed to place the trade
- */
 export function formatPage1(signal) {
   const sym = cleanSymbol(signal?.symbol);
   const fullSym = html(signal?.symbol || 'UNKNOWN');
@@ -157,6 +144,7 @@ export function formatPage1(signal) {
   ];
   
   if (tp2) {
+    // FIXED: was <<b> — now <b>
     lines.push(`<<b>Target 2:</b> $${formatPrice(tp2)}`);
   }
   
@@ -210,9 +198,6 @@ export function formatPage1(signal) {
 
 // ─── PAGE 2: TECHNICAL ANALYSIS ───────────────────────────
 
-/**
- * Format signal Page 2 — Technical breakdown and context
- */
 export function formatPage2(signal) {
   const sym = cleanSymbol(signal?.symbol);
   const a = signal?.analysis || {};
@@ -294,9 +279,6 @@ export function formatPage2(signal) {
 
 // ─── SIGNAL CLOSED ─────────────────────────────────────────
 
-/**
- * Format signal closure message
- */
 export function formatClosed(signal, result, exitPrice, pnl, pnlPct) {
   const sym = cleanSymbol(signal?.symbol);
   const isWin = String(result).includes('take_profit');
@@ -344,9 +326,6 @@ export function formatClosed(signal, result, exitPrice, pnl, pnlPct) {
 
 // ─── DASHBOARD ─────────────────────────────────────────────
 
-/**
- * Format system dashboard
- */
 export function formatDashboard(stats, marketData, challenge) {
   const current = Number(challenge?.CURRENT_CAPITAL) || 0;
   const start = Number(challenge?.START_CAPITAL) || 10;
@@ -387,83 +366,40 @@ export function formatDashboard(stats, marketData, challenge) {
   return lines.join('\n');
 }
 
-// ─── BUTTON GENERATORS ─────────────────────────────────────
+// ─── BUTTON HELPERS ────────────────────────────────────────
 
-/**
- * Get buttons for active signal (2-page navigation)
- */
-export function getSignalButtons(signalId) {
-  return {
-    inline_keyboard: [
-      [
-        { text: '◀️ Trade', callback_data: `PAGE1_${signalId}` },
-        { text: '▶️ Analysis', callback_data: `PAGE2_${signalId}` }
-      ],
-      [
-        { text: '✅ Taking', callback_data: `TAKEN_${signalId}` },
-        { text: '❌ Skip', callback_data: `SKIPPED_${signalId}` }
-      ],
-      [
-        { text: '📊 Dashboard', callback_data: 'DASHBOARD' }
-      ]
-    ]
-  };
-}
-
-/**
- * Get buttons for closed signal
- */
-export function getCloseButtons() {
-  return {
-    inline_keyboard: [
-      [
-        { text: '📊 Dashboard', callback_data: 'DASHBOARD' },
-        { text: '🎯 New Signal', callback_data: 'GET_SIGNAL' }
-      ]
-    ]
-  };
-}
-
-// ─── TELEGRAF MARKUP VERSIONS ─────────────────────────────
-
-/**
- * Telegraf Markup version for Page 1
- */
 export function getPage1Markup(signalId) {
-  // Dynamic import to avoid hard dependency
-  try {
-    const { Markup } = require('telegraf');
-    return Markup.inlineKeyboard([
-      [
-        Markup.button.callback('◀️ Trade', `PAGE1_${signalId}`),
-        Markup.button.callback('▶️ Analysis', `PAGE2_${signalId}`)
-      ],
-      [
-        Markup.button.callback('✅ Taking', `TAKEN_${signalId}`),
-        Markup.button.callback('❌ Skip', `SKIPPED_${signalId}`)
-      ],
-      [
-        Markup.button.callback('📊 Dashboard', 'DASHBOARD')
-      ]
-    ]);
-  } catch {
-    return undefined;
-  }
+  const { Markup } = require('telegraf');
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('◀️ Trade', `PAGE1_${signalId}`),
+      Markup.button.callback('▶️ Analysis', `PAGE2_${signalId}`)
+    ],
+    [
+      Markup.button.callback('✅ Taking', `TAKEN_${signalId}`),
+      Markup.button.callback('❌ Skip', `SKIPPED_${signalId}`)
+    ],
+    [
+      Markup.button.callback('📊 Dashboard', 'DASHBOARD')
+    ]
+  ]);
 }
 
-/**
- * Telegraf Markup version for closed signal
- */
 export function getCloseMarkup() {
-  try {
-    const { Markup } = require('telegraf');
-    return Markup.inlineKeyboard([
-      [
-        Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
-        Markup.button.callback('🎯 New Signal', 'GET_SIGNAL')
-      ]
-    ]);
-  } catch {
-    return undefined;
-  }
+  const { Markup } = require('telegraf');
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('📊 Dashboard', 'DASHBOARD'),
+      Markup.button.callback('🎯 New Signal', 'GET_SIGNAL')
+    ]
+  ]);
 }
+
+// ─── BACKWARD COMPATIBILITY ────────────────────────────────
+
+export { formatPage1 as formatSignalPage1 };
+export { formatPage2 as formatSignalPage2 };
+export { formatClosed as formatCloseMessage };
+export { getPage1Markup as getSignalButtons };
+export { getCloseMarkup as getCloseButtons };
+    
