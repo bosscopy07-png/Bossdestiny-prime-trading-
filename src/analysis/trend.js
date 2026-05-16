@@ -3,7 +3,7 @@
 // EMA-based trend detection with strength scoring
 // ==========================================
 
-import { calculateEMA, calculateSMA, clamp } from '../utils/math.js';
+import { calculateEMA } from '../utils/math.js';
 import { analysisLogger } from '../utils/logger.js';
 
 /**
