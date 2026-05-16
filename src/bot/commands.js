@@ -1,55 +1,49 @@
 // ==========================================
-// BOT COMMANDS
-// Telegram command handlers
+// BOT ACTION HANDLERS
+// Inline keyboard callback handlers — 2-Page Signal Format
+// VERSION: 4.0 — Recoded with matching exports
 // ==========================================
 
 import { Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
-import { formatSignalMessage, formatDashboard } from '../signals/formatter.js';
+import { 
+  formatPage1, 
+  formatPage2, 
+  formatDashboard, 
+  formatClosed,
+  getPage1Markup,
+  getCloseMarkup
+} from '../signals/formatter.js';
+
+// Store active signals for page navigation (use Redis in production)
+const activeSignalMessages = new Map();
 
 /**
- * Register all bot commands
+ * Register all action handlers
  */
-export function registerCommands(bot, generator, marketData) {
+export function registerActions(bot, generator, marketData, userSettings) {
   
   const isReady = () => marketData?.isRunning === true && marketData?.exchange != null;
 
-  bot.command('start', async (ctx) => {
+  const safeAnswer = async (ctx, text = '') => {
     try {
-      botLogger.info(`User started: ${ctx.from.id}`);
-      
-      const welcome = [
-        '🎯 <b>SignalAlpha v3.0 — Institutional Signals</b>',
-        '',
-        'Real-time crypto futures analysis with multi-layer scoring.',
-        '',
-        '<b>Commands:</b>',
-        '📊 /dashboard — View challenge progress',
-        '🎯 /signal — Get manual signal scan',
-        '🔥 /live — Start auto-scanning (admin)',
-        '',
-        isReady() ? '✅ System ready' : '⏳ System initializing...',
-        '',
-        `🎁 <a href="${escapeHtml(CONFIG.REFERRAL.LINK)}">Trade on BingX</a> | Code: <code>${escapeHtml(CONFIG.REFERRAL.CODE)}</code>`
-      ].join('\n');
-
-      await ctx.reply(welcome, {
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📊 Dashboard', 'DASHBOARD'), Markup.button.callback('🎯 Get Signal', 'GET_SIGNAL')]
-        ])
-      });
+      await ctx.answerCbQuery(text);
     } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /start command');
-      await ctx.reply('⚠️ An error occurred. Please try again later.');
+      botLogger.debug({ err: err.message }, 'answerCbQuery failed');
     }
-  });
+  };
 
-  bot.command('dashboard', async (ctx) => {
+  // ─── DASHBOARD ────────────────────────────────────────────
+
+  bot.action('DASHBOARD', async (ctx) => {
     try {
-      if (!isReady()) return ctx.reply('⏳ System initializing, please wait...');
+      if (!isReady()) {
+        await safeAnswer(ctx, '⏳ Initializing...');
+        return ctx.reply('⏳ System initializing, please wait...');
+      }
+
+      await safeAnswer(ctx);
       
       const stats = generator.getStats();
       const text = formatDashboard(stats, marketData, CONFIG.CHALLENGE);
@@ -64,49 +58,64 @@ export function registerCommands(bot, generator, marketData) {
         [Markup.button.callback('⚙️ Settings', 'SETTINGS')]
       ];
 
-      await ctx.reply(text, {
+      await ctx.editMessageText(text, {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
         ...Markup.inlineKeyboard(buttons)
+      }).catch(() => {
+        ctx.reply(text, {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          ...Markup.inlineKeyboard(buttons)
+        });
       });
     } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /dashboard command');
-      await ctx.reply('⚠️ Failed to load dashboard. Please try again later.');
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in DASHBOARD action');
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to load dashboard. Please try again.');
     }
   });
 
-  bot.command('signal', async (ctx) => {
-    try {
-      if (!isReady()) return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
+  // ─── GET SIGNAL (Manual Scan) ─────────────────────────────
 
-      await ctx.reply('🔍 Scanning for qualified setups...', { parse_mode: 'HTML' });
+  bot.action('GET_SIGNAL', async (ctx) => {
+    try {
+      if (!isReady()) {
+        await safeAnswer(ctx, 'Not ready');
+        return ctx.reply('⏳ Market data not ready yet. Please wait a moment...');
+      }
+
+      await safeAnswer(ctx, '🔍 Scanning...');
+      const scanningMsg = await ctx.reply('🔍 Scanning top pairs for qualified setups...');
       
-      const symbols = await marketData.getTopVolumeSymbols(15);
+      const symbols = await marketData.getTopVolumeSymbols(10);
       let found = false;
       
-      for (const symbol of symbols) {
+      for (const symbol of symbols.slice(0, 5)) {
         const signal = await generator.generateSignal(symbol);
         if (signal) {
-          await ctx.reply(formatSignalMessage(signal), {
+          activeSignalMessages.set(signal.id, signal);
+          
+          await ctx.deleteMessage(scanningMsg.message_id).catch(() => {});
+          
+          await ctx.reply(formatPage1(signal), {
             parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('✅ Taking This', `TAKEN_${signal.id}`), Markup.button.callback('❌ Skip', `SKIPPED_${signal.id}`)],
-              [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
-            ])
+            disable_web_page_preview: true,
+            ...getPage1Markup(signal.id)
           });
+          
           found = true;
-          break;
+          return;
         }
-        await sleep(1000);
+        await sleep(1500);
       }
       
       if (!found) {
+        await ctx.deleteMessage(scanningMsg.message_id).catch(() => {});
         await ctx.reply([
           '❌ <b>No qualified setups found</b>',
           '',
           'Markets are consolidating or signals don\'t meet quality thresholds.',
-          '',
-          'Try again in 15-30 minutes.',
           '',
           'Quality &gt; Quantity. Patience pays.'
         ].join('\n'), {
@@ -117,113 +126,295 @@ export function registerCommands(bot, generator, marketData) {
           ])
         });
       }
+      
     } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /signal command');
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in GET_SIGNAL action');
+      await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Signal scan failed. Please try again later.');
     }
   });
 
-  bot.command('live', async (ctx) => {
+  // ─── PAGE NAVIGATION ──────────────────────────────────────
+
+  bot.action(/PAGE1_(.+)/, async (ctx) => {
     try {
-      if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only command');
-      if (!isReady()) return ctx.reply('⏳ System not ready yet');
+      const signalId = ctx.match[1];
+      const signal = activeSignalMessages.get(signalId);
       
-      await ctx.reply('🔥 Starting live market scanning...');
+      if (!signal) {
+        await safeAnswer(ctx, '⏳ Signal expired');
+        return;
+      }
       
-      // Fire and forget — startContinuousScanning never returns
-      generator.startContinuousScanning().catch(err => {
-        botLogger.error({ err: err.message, stack: err.stack }, 'Scanner crashed from /live');
+      await safeAnswer(ctx);
+      
+      await ctx.editMessageText(formatPage1(signal), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...getPage1Markup(signal.id)
       });
     } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /live command');
+      botLogger.error({ err: err.message }, 'Error in PAGE1 action');
+      await safeAnswer(ctx, 'Error');
+    }
+  });
+
+  bot.action(/PAGE2_(.+)/, async (ctx) => {
+    try {
+      const signalId = ctx.match[1];
+      const signal = activeSignalMessages.get(signalId);
+      
+      if (!signal) {
+        await safeAnswer(ctx, '⏳ Signal expired');
+        return;
+      }
+      
+      await safeAnswer(ctx);
+      
+      await ctx.editMessageText(formatPage2(signal), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('◀️ Trade', `PAGE1_${signal.id}`),
+            Markup.button.callback('▶️ Analysis', `PAGE2_${signal.id}`)
+          ],
+          [
+            Markup.button.callback('📊 Chart', 'url', `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(signal.symbol)}`),
+            Markup.button.callback('⚡ Trade Now', 'url', CONFIG?.REFERRAL?.LINK || '#')
+          ],
+          [
+            Markup.button.callback('📊 Dashboard', 'DASHBOARD')
+          ]
+        ])
+      });
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Error in PAGE2 action');
+      await safeAnswer(ctx, 'Error');
+    }
+  });
+
+  // ─── START/STOP SCANNING ──────────────────────────────────
+
+  bot.action('START_LIVE', async (ctx) => {
+    try {
+      if (!isAdmin(ctx)) {
+        await safeAnswer(ctx, '⛔ Admin only');
+        return;
+      }
+
+      if (!isReady()) {
+        await safeAnswer(ctx, 'Not ready');
+        return ctx.reply('⏳ System not ready yet');
+      }
+
+      await safeAnswer(ctx, '🔥 Starting...');
+      await ctx.reply('🔥 Live scanning activated. Signals will auto-send when qualified.');
+      
+      generator.startContinuousScanning().catch(err => {
+        botLogger.error({ err: err.message, stack: err.stack }, 'Scanner crashed from START_LIVE');
+      });
+    } catch (err) {
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in START_LIVE action');
+      await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to start scanning.');
     }
   });
 
-  bot.command('stop', async (ctx) => {
+  bot.action('STOP_SCAN', async (ctx) => {
     try {
-      if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only command');
-      
+      if (!isAdmin(ctx)) {
+        await safeAnswer(ctx, '⛔ Admin only');
+        return;
+      }
+
+      await safeAnswer(ctx, '⏹️ Stopping...');
       generator.stopScanning();
-      await ctx.reply('⏹️ Scanning stopped.');
+      await ctx.reply('⏹️ Scanning stopped');
     } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /stop command');
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in STOP_SCAN action');
+      await safeAnswer(ctx, 'Error');
       await ctx.reply('⚠️ Failed to stop scanning.');
     }
   });
 
-  bot.command('diagnose', async (ctx) => {
-    try {
-      if (!isAdmin(ctx)) return ctx.reply('⛔ Admin only');
-      if (!isReady()) return ctx.reply('⏳ System not ready yet');
-      
-      await ctx.reply('🔍 Running diagnostic scan...');
-      
-      const symbols = await marketData.getTopVolumeSymbols(10);
-      const results = [];
-      
-      for (const symbol of symbols) {
-        const analysis = await generator.analyzeSymbol(symbol, true);
-        if (analysis) {
-          results.push({
-            symbol,
-            score: analysis.confidence.score,
-            tier: analysis.confidence.tier,
-            passed: analysis.confidence.passed,
-            setup: analysis.setup?.type,
-            rr: analysis.setup?.rr?.toFixed(2),
-          });
-        }
-      }
-      
-      results.sort((a, b) => b.score - a.score);
-      
-      const text = [
-        '📊 <b>Diagnostic Results</b>',
-        '',
-        ...results.map(r => 
-          `${r.passed ? '✅' : '❌'} ${escapeHtml(r.symbol)}: ${r.score}% (${escapeHtml(r.tier)}) | ${escapeHtml(r.setup || 'No setup')} | R:R ${r.rr || 'N/A'}`
-        ).slice(0, 10),
-        '',
-        'Top 10 near-misses shown. If all &lt;55%, markets are choppy.'
-      ].join('\n');
-      
-      await ctx.reply(text, { parse_mode: 'HTML' });
-    } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /diagnose command');
-      await ctx.reply('⚠️ Diagnostic scan failed.');
-    }
-  });
+  // ─── STATS ────────────────────────────────────────────────
 
-  bot.command('stats', async (ctx) => {
+  bot.action('STATS', async (ctx) => {
     try {
+      await safeAnswer(ctx);
+      
       const stats = generator.getStats();
-      const riskStatus = stats.riskStatus || {};
+      const riskStatus = generator.riskManager.getStatus();
       
       await ctx.reply([
         '📊 <b>System Statistics</b>',
         '',
-        `Signals Today: ${stats.signalsToday}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`,
-        `Active Signals: ${stats.activeSignals}`,
-        `Scanning: ${stats.isScanning ? '🟢 ON' : '⚪ OFF'}`,
-        `Scan Cycles: ${stats.scansCompleted}`,
+        `Scan Cycles: ${stats.scansCompleted || 0}`,
+        `Signals Today: ${stats.signalsToday || 0}/${CONFIG.RISK.MAX_SIGNALS_PER_DAY}`,
+        `Active Signals: ${stats.activeSignals || 0}`,
         '',
-        `Cooldown: ${riskStatus.inCooldown ? '🔴 ACTIVE' : '🟢 Inactive'}`,
-        `Consecutive Losses: ${riskStatus.consecutiveLosses || 0}`,
-        `Daily Loss: $${(riskStatus.dailyLoss || 0).toFixed(2)}`,
+        '<b>Risk Status:</b>',
+        `Cooldown: ${riskStatus.cooldownLevel > 0 ? `🔴 Level ${riskStatus.cooldownLevel}` : '🟢 Inactive'}`,
+        `Win Streak: ${riskStatus.winStreak || 0}`,
+        `Loss Streak: ${riskStatus.lossStreak || 0}`,
+        `Daily P&L: $${riskStatus.dailyPnL?.toFixed(2) || '0.00'}`,
+        `Win Rate: ${riskStatus.winRate || 0}%`,
         '',
-        `Markets Tracked: ${marketData.perpetualMarkets?.length || 0}`,
-        `Challenge Day: ${CONFIG.CHALLENGE.DAYS}`,
-        `Capital: $${CONFIG.CHALLENGE.CURRENT_CAPITAL.toFixed(2)}`
-      ].join('\n'), { parse_mode: 'HTML' });
+        `Last Scan: ${stats.lastScan ? new Date(stats.lastScan).toLocaleTimeString() : 'Never'}`
+      ].join('\n'), {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('📊 Dashboard', 'DASHBOARD')]
+        ])
+      });
     } catch (err) {
-      botLogger.error({ err: err.message, stack: err.stack }, 'Error in /stats command');
-      await ctx.reply('⚠️ Failed to load statistics.');
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in STATS action');
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to load stats.');
     }
   });
 
-  botLogger.info('Commands registered');
+  // ─── SETTINGS ─────────────────────────────────────────────
+
+  bot.action('SETTINGS', async (ctx) => {
+    try {
+      await safeAnswer(ctx);
+      const settings = userSettings.get(ctx.from.id) || {};
+      
+      await ctx.reply([
+        '⚙️ <b>User Settings</b>',
+        '',
+        `Min Confidence: ${settings.minConfidence || 60}%`,
+        `Notifications: ${settings.notifications !== false ? '✅ ON' : '❌ OFF'}`,
+        '',
+        'Adjust confidence threshold:'
+      ].join('\n'), {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('60% (Balanced)', 'SET_CONF_60')],
+          [Markup.button.callback('70% (Conservative)', 'SET_CONF_70')],
+          [Markup.button.callback('80% (Strict)', 'SET_CONF_80')],
+          [Markup.button.callback('🔙 Back', 'DASHBOARD')]
+        ])
+      });
+    } catch (err) {
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in SETTINGS action');
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to load settings.');
+    }
+  });
+
+  bot.action(/SET_CONF_(\d+)/, async (ctx) => {
+    try {
+      const conf = parseInt(ctx.match[1]);
+      userSettings.set(ctx.from.id, { 
+        ...(userSettings.get(ctx.from.id) || {}),
+        minConfidence: conf 
+      });
+      await safeAnswer(ctx, `✅ ${conf}%`);
+      await ctx.reply(`✅ Minimum confidence set to ${conf}%`);
+    } catch (err) {
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in SET_CONF action');
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to update settings.');
+    }
+  });
+
+  // ─── TAKEN / SKIPPED ──────────────────────────────────────
+
+  bot.action(/TAKEN_(.+)/, async (ctx) => {
+    try {
+      const signalId = ctx.match[1];
+      await safeAnswer(ctx, '✅ Marked as taken');
+      await ctx.reply('📝 Signal marked as TAKEN. Trade with discipline!\n\n⚠️ Remember: This is educational only. Manage your risk.');
+      botLogger.info(`Signal ${signalId.slice(0, 8)} taken by ${ctx.from.id}`);
+    } catch (err) {
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in TAKEN action');
+      await safeAnswer(ctx, 'Error');
+    }
+  });
+
+  bot.action(/SKIPPED_(.+)/, async (ctx) => {
+    try {
+      const signalId = ctx.match[1];
+      await safeAnswer(ctx, 'Skipped');
+      botLogger.info(`Signal ${signalId.slice(0, 8)} skipped by ${ctx.from.id}`);
+    } catch (err) {
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in SKIPPED action');
+      await safeAnswer(ctx, 'Error');
+    }
+  });
+
+  // ─── ENABLE ALERTS ────────────────────────────────────────
+
+  bot.action('ENABLE_ALERTS', async (ctx) => {
+    try {
+      await safeAnswer(ctx);
+      userSettings.set(ctx.from.id, {
+        ...(userSettings.get(ctx.from.id) || {}),
+        notifications: true
+      });
+      await ctx.reply('🔔 Auto-alerts enabled. You will receive signals when they meet quality thresholds.');
+    } catch (err) {
+      botLogger.error({ err: err.message, stack: err.stack }, 'Error in ENABLE_ALERTS action');
+      await safeAnswer(ctx, 'Error');
+      await ctx.reply('⚠️ Failed to enable alerts.');
+    }
+  });
+
+  // ─── AUTO-SIGNAL LISTENER ─────────────────────────────────
+
+  generator.on('signal', async (signal) => {
+    try {
+      activeSignalMessages.set(signal.id, signal);
+      
+      for (const [userId, settings] of userSettings.entries()) {
+        if (settings.notifications !== false && signal.confidence.score >= (settings.minConfidence || 60)) {
+          try {
+            await bot.telegram.sendMessage(userId, formatPage1(signal), {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              ...getPage1Markup(signal.id)
+            });
+          } catch (err) {
+            botLogger.debug({ err: err.message, userId }, 'Failed to send auto-signal');
+          }
+        }
+      }
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Error broadcasting signal');
+    }
+  });
+
+  // ─── SIGNAL CLOSED LISTENER ───────────────────────────────
+
+  generator.on('signal_closed', async ({ signal, result, exitPrice, pnl, pnlPct }) => {
+    try {
+      activeSignalMessages.delete(signal.id);
+      
+      for (const [userId, settings] of userSettings.entries()) {
+        if (settings.notifications !== false) {
+          try {
+            await bot.telegram.sendMessage(userId, formatClosed(signal, result, exitPrice, pnl, pnlPct), {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              ...getCloseMarkup()
+            });
+          } catch (err) {
+            botLogger.debug({ err: err.message, userId }, 'Failed to send close message');
+          }
+        }
+      }
+    } catch (err) {
+      botLogger.error({ err: err.message }, 'Error broadcasting close');
+    }
+  });
+
+  botLogger.info('Action handlers registered (v4.0)');
 }
+
+// ─── HELPERS ───────────────────────────────────────────────
 
 function isAdmin(ctx) {
   return CONFIG.ADMIN_IDS.includes(String(ctx.from?.id));
@@ -233,12 +424,7 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function escapeHtml(text) {
-  if (typeof text !== 'string') return String(text);
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-                    }
-        
+// ─── EXPORTS ───────────────────────────────────────────────
+
+export { activeSignalMessages };
+    
