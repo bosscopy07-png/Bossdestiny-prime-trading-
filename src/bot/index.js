@@ -32,9 +32,6 @@ export class SignalAlphaBot {
     botLogger.info('SignalAlphaBot constructed');
   }
 
-  /**
-   * Middleware: attach admin flag to context
-   */
   _setupMiddleware() {
     this.bot.use(async (ctx, next) => {
       if (ctx.from) {
@@ -44,9 +41,6 @@ export class SignalAlphaBot {
     });
   }
 
-  /**
-   * Wire generator events to Telegram notifications
-   */
   _setupEvents() {
     this.generator.on('signal', (signal) => this._handleNewSignal(signal));
     this.generator.on('signal_closed', (data) => this._handleSignalClose(data));
@@ -54,31 +48,21 @@ export class SignalAlphaBot {
     this.generator.on('scanning_stopped', () => this._broadcastToAdmins('⏹️ Scanning stopped'));
   }
 
-  /**
-   * Register command/action handlers
-   * DEFERRED: Called AFTER market data is ready to prevent crashes
-   */
   _registerHandlers() {
     if (this.handlersRegistered) {
       botLogger.warn('Handlers already registered, skipping');
       return;
     }
-
     registerCommands(this.bot, this.generator, this.marketData);
     registerActions(this.bot, this.generator, this.marketData, this.userSettings);
     this.handlersRegistered = true;
-
     botLogger.info('Bot handlers registered');
   }
 
-  /**
-   * Main startup sequence
-   */
   async start() {
     botLogger.info('Starting SignalAlpha Bot...');
     
     try {
-      // Step 1: Initialize market data FIRST (blocks until ready)
       botLogger.info('Step 1: Initializing market data...');
       await this.marketData.initialize();
       
@@ -89,15 +73,12 @@ export class SignalAlphaBot {
       botLogger.info('Market data ready');
       botLogger.info(`Markets: ${this.marketData.perpetualMarkets.length}`);
       
-      // Step 2: Register handlers NOW that market data is ready
       botLogger.info('Step 2: Registering bot handlers...');
       this._registerHandlers();
       
-      // Step 3: Launch bot
       botLogger.info('Step 3: Launching Telegram bot...');
       await this.bot.launch();
       
-      // Step 4: Auto-start scanner if configured
       if (process.env.AUTO_START_SCAN === 'true') {
         botLogger.info('Auto-starting scanner in 10s...');
         setTimeout(() => {
@@ -114,17 +95,12 @@ export class SignalAlphaBot {
       throw err;
     }
     
-    // Graceful shutdown handlers
     process.once('SIGINT', () => this.shutdown('SIGINT'));
     process.once('SIGTERM', () => this.shutdown('SIGTERM'));
   }
 
-  /**
-   * Handle new signal from generator — broadcast to admins
-   */
   async _handleNewSignal(signal) {
     const text = formatSignalMessage(signal);
-    
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
         await this.bot.telegram.sendMessage(adminId, text, {
@@ -137,12 +113,8 @@ export class SignalAlphaBot {
     }
   }
 
-  /**
-   * Handle signal closure from generator — notify admins
-   */
   async _handleSignalClose(data) {
     const { signal, result, pnl, pnlPct } = data;
-    
     const emoji = result.includes('take_profit') ? '🎯' : '🛑';
     const text = [
       `${emoji} <b>SIGNAL CLOSED</b>`,
@@ -163,9 +135,6 @@ export class SignalAlphaBot {
     }
   }
 
-  /**
-   * Broadcast message to all admin IDs
-   */
   async _broadcastToAdmins(message) {
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
@@ -176,9 +145,6 @@ export class SignalAlphaBot {
     }
   }
 
-  /**
-   * Graceful shutdown
-   */
   shutdown(signal) {
     botLogger.info(`Shutting down (${signal})...`);
     
@@ -205,9 +171,6 @@ export class SignalAlphaBot {
   }
 }
 
-/**
- * Escape HTML special characters to prevent XSS and broken parsing
- */
 function escapeHtml(text) {
   if (typeof text !== 'string') return String(text);
   return text
