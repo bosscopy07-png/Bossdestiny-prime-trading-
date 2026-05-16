@@ -1,6 +1,7 @@
 // ==========================================
 // MARKET DATA ENGINE
 // Handles all exchange interaction, caching, WebSocket feeds
+// VERSION: 3.3-community — Blocks commodities/forex/stocks
 // ==========================================
 
 import ccxt from 'ccxt';
@@ -346,43 +347,30 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-    async getTopVolumeSymbols(count = 20) {
+  async getTopVolumeSymbols(count = 20) {
     marketLogger.info(`Fetching top ${count} volume symbols...`);
 
-    // ─── FILTER CONFIGURATION ───────────────────────────────────
-    const COMMODITY_BASES = ['XAG', 'XAU', 'GOLD', 'SILVER', 'OIL', 'NATGAS', 'GAS', 'COPPER', 'WHEAT', 'CORN', 'SOY'];
-    
-    const FOREX_BASES = ['EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'SGD', 'HKD', 'CNY', 'MXN', 'ZAR', 'TRY', 'SEK', 'NOK'];
-    
+    const COMMODITY_BASES = ['XAG', 'XAU', 'GOLD', 'SILVER', 'OIL', 'CL', 'NATGAS', 'GAS', 'COPPER', 'WHEAT', 'CORN', 'SOY', 'CRUDE'];
+    const FOREX_BASES = ['EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'SGD', 'HKD', 'CNY', 'MXN', 'ZAR', 'TRY', 'SEK', 'NOK', 'RUB', 'INR'];
     const STOCK_COIN_BASES = [
-      'TSLA', 'AAPL', 'NVDA', 'AMZN', 'GOOGL', 'MSFT', 'META', 'NFLX', 'COIN', 'AMD', 'INTC', 'BABA', 
-      'PLTR', 'DIS', 'BA', 'JPM', 'V', 'MA', 'WMT', 'T', 'KO', 'PEP', 'MCD', 'NKE', 'PYPL', 'UBER', 
-      'LYFT', 'ZM', 'SNOW', 'CRM', 'ORCL', 'IBM', 'GE', 'F', 'GM', 'TSM', 'ASML', 'ARM', 'QCOM', 
-      'AVGO', 'TXN', 'MU', 'LRCX', 'KLAC', 'SNPS', 'CDNS', 'ANSS', 'ADSK', 'PANW', 'CRWD', 'FTNT', 
-      'CYBR', 'SPLK', 'DDOG', 'MDB', 'NET', 'FSLY', 'OKTA', 'DOCU', 'SQ', 'SHOP', 'SE', 'MELI', 
-      'ABNB', 'DASH', 'U', 'RBLX', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'LMND', 'ROOT', 'HCP', 'TOST', 
-      'GTLB', 'ASAN', 'MNDY', 'SMAR', 'AI', 'PATH', 'BIG', 'CFLT'
+      'TSLA', 'AAPL', 'NVDA', 'AMZN', 'GOOGL', 'MSFT', 'META', 'NFLX', 'COIN', 'AMD', 'INTC', 'BABA',
+      'PLTR', 'DIS', 'BA', 'JPM', 'V', 'MA', 'WMT', 'T', 'KO', 'PEP', 'MCD', 'NKE', 'PYPL', 'UBER',
+      'LYFT', 'ZM', 'SNOW', 'CRM', 'ORCL', 'IBM', 'GE', 'F', 'GM', 'TSM', 'ASML', 'ARM', 'QCOM',
+      'AVGO', 'TXN', 'MU', 'LRCX', 'KLAC', 'SNPS', 'CDNS', 'ANSS', 'ADSK', 'PANW', 'CRWD', 'FTNT',
+      'CYBR', 'SPLK', 'DDOG', 'MDB', 'NET', 'FSLY', 'OKTA', 'DOCU', 'SQ', 'SHOP', 'SE', 'MELI',
+      'ABNB', 'DASH', 'U', 'RBLX', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'LMND', 'ROOT', 'HCP', 'TOST',
+      'GTLB', 'ASAN', 'MNDY', 'SMAR', 'AI', 'PATH', 'BIG', 'CFLT', 'SNDK', 'WD', 'WDC', 'STX'
     ];
-    
     const INDEX_BASES = ['US500', 'US100', 'US30', 'DE40', 'UK100', 'JP225', 'HK50', 'AU200', 'EU50', 'FR40', 'ES35', 'IT40', 'CH20', 'CA60'];
-    // ─────────────────────────────────────────────────────────────
+    const PROBLEMATIC = ['BILL', 'MU', 'LAB', 'HYPE', 'FART', 'POOP', 'MEME', 'BABY', 'ELON', 'DOGEK', 'SHIBK'];
 
     const isExcluded = (base, quote, symbol) => {
-      // Commodities
       if (COMMODITY_BASES.includes(base)) return true;
-      
-      // Forex (fiat crosses)
       if (FOREX_BASES.includes(base) || FOREX_BASES.includes(quote)) return true;
-      
-      // Stock coins
       if (STOCK_COIN_BASES.includes(base)) return true;
-      
-      // Indices
       if (INDEX_BASES.includes(base)) return true;
-      
-      // Leveraged tokens
-      if (/(3L|3S|5L|5S|UP|DOWN)$/.test(base)) return true;
-      
+      if (/(3L|3S|5L|5S|UP|DOWN|2L|2S|4L|4S)$/.test(base)) return true;
+      if (PROBLEMATIC.includes(base)) return true;
       return false;
     };
 
@@ -433,9 +421,6 @@ export class MarketDataEngine extends EventEmitter {
     }
   }
 
-  /**
-   * Fallback that applies the SAME filters to perpetualMarkets
-   */
   _getFilteredFallback(count, isExcludedFn) {
     const filtered = this.perpetualMarkets.filter(symbol => {
       const market = this.exchange.markets?.[symbol];
@@ -447,8 +432,8 @@ export class MarketDataEngine extends EventEmitter {
     
     marketLogger.warn(`Fallback returned ${filtered.length} symbols after filtering`);
     return filtered.slice(0, count);
-        }
-  
+  }
+
   async getBTCTrend() {
     const btcSymbols = this.perpetualMarkets.filter(s => s.includes('BTC/'));
     const btcSymbol = btcSymbols.find(s => s.includes('USDT')) || btcSymbols[0];
@@ -523,5 +508,5 @@ export class MarketDataEngine extends EventEmitter {
 
     marketLogger.info('MarketDataEngine shut down');
   }
-      }
-        
+          }
+      
