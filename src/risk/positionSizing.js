@@ -1,20 +1,15 @@
-
 // ==========================================
 // POSITION SIZING MODULE
-// FIXED: Correct unit separation — base qty vs notional vs margin
+// Dynamic risk-based sizing — leverage is signal-driven, not capped
+// VERSION: 3.3-community
 // ==========================================
 
 import { CONFIG } from '../config/index.js';
 import { riskLogger } from '../utils/logger.js';
 
-/**
- * Calculate position parameters
- * CRITICAL: Returns baseQty for exchange API, notional for human reading, margin for capital check
- */
 export function calculatePosition(setup, confidence, atr, currentCapital, streakData = {}) {
   const { winStreak = 0, lossStreak = 0, dailyPnL = 0 } = streakData;
 
-  // ─── DYNAMIC RISK PERCENTAGE ──────────────────────────────
   let riskPct = 0.3 + (confidence.score / 100) * 4.7;
   
   if (winStreak > 0) riskPct += Math.min(winStreak * 0.5, 2.0);
@@ -39,7 +34,6 @@ export function calculatePosition(setup, confidence, atr, currentCapital, streak
     return null;
   }
 
-  // ─── DYNAMIC LEVERAGE ─────────────────────────────────────
   let leverage = 3 + (confidence.score - 40) * 0.4;
   const atrPct = atr?.percent || 2;
   
@@ -61,22 +55,13 @@ export function calculatePosition(setup, confidence, atr, currentCapital, streak
   
   leverage = Math.max(1, Math.round(leverage));
 
-  // ─── CORRECT UNIT CALCULATION ──────────────────────────────
-  // Base quantity: how many coins to buy/sell
   const baseQty = riskAmount / riskPrice;
-  
-  // Notional value: baseQty * entry price (USDT exposure)
   const notionalValue = baseQty * setup.entry;
-  
-  // Margin required: notional / leverage (actual capital locked)
   const margin = notionalValue / leverage;
 
-  // SAFETY: Margin must be <= 90% of available capital (leave buffer)
   if (margin > currentCapital * 0.9) {
-    riskLogger.warn(`Margin $${margin.toFixed(2)} > 90% capital $${currentCapital}, reducing`);
-    // Recalculate leverage to fit margin within 80% capital
-    const maxNotional = currentCapital * 0.8 * leverage;
-    const adjustedLeverage = Math.max(1, Math.floor(notionalValue / (currentCapital * 0.6)));
+    riskLogger.warn(`Margin $${margin.toFixed(2)} > 90% capital, reducing`);
+    const adjustedLeverage = Math.max(1, Math.ceil(notionalValue / (currentCapital * 0.6)));
     leverage = adjustedLeverage;
   }
 
@@ -88,9 +73,9 @@ export function calculatePosition(setup, confidence, atr, currentCapital, streak
     riskPct,
     riskAmount: riskAmount.toFixed(2),
     leverage,
-    baseQty: baseQty.toFixed(6),           // FOR EXCHANGE API: quantity in base units
-    notionalValue: notionalValue.toFixed(2), // FOR HUMAN: USDT exposure
-    margin: (notionalValue / leverage).toFixed(2), // FOR HUMAN: capital required
+    baseQty: baseQty.toFixed(6),
+    notionalValue: notionalValue.toFixed(2),
+    margin: (notionalValue / leverage).toFixed(2),
     estProfit: estProfit.toFixed(2),
     estLoss: estLoss.toFixed(2),
     unit: 'base',
