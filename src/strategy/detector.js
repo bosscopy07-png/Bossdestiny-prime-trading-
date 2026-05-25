@@ -1,35 +1,34 @@
-// ==========================================
-// STRATEGY DETECTOR
-// Orchestrates all setup detectors by priority
-// RELAXED: Allows marginal setups with context
-// ==========================================
-
 import { detectLiquiditySweep } from './setups/liquiditySweep.js';
-import { detectTrendContinuation } from './setups/trendContinuation.js';
 import { detectBreakout } from './setups/breakout.js';
 import { detectPullback } from './setups/pullback.js';
+import { detectTrendContinuation } from './setups/trendContinuation.js';
 import { detectRangePlay } from './setups/rangePlay.js';
 import { signalLogger } from '../utils/logger.js';
 
-const QUALITY_RANK = { 'A+': 5, 'A': 4, 'B+': 3, 'B': 2, 'C+': 1, 'C': 0 };
+const QUALITY_RANK = { 'A+': 5, 'A': 4, 'A-': 3.5, 'B+': 3, 'B': 2, 'C+': 1 };
 
+const DETECTORS = [
+  detectLiquiditySweep,
+  detectTrendContinuation,
+  detectBreakout,
+  detectPullback,
+  detectRangePlay,
+];
+
+// C+ allowed only if R:R exceeds this threshold (excellent reward compensates)
+const CPLUS_MIN_RR = 2.5;
+
+/**
+ * StrategyDetector — Routes analysis to all setup detectors
+ * Returns the highest-quality setup found, or null
+ * Minimum quality: B (C+ allowed only if R:R >= 2.5)
+ */
 export class StrategyDetector {
   constructor() {
-    this.minQuality = 'C';        // RELAXED: Was 'B', now accepts C+
-    this.detectors = [
-      detectLiquiditySweep,       // Highest priority: clean entries
-      detectTrendContinuation,    // Trend following
-      detectBreakout,             // Momentum
-      detectPullback,             // S/R bounce
-      detectRangePlay,            // Lowest priority: mean reversion
-    ];
-    signalLogger.info('StrategyDetector initialized (relaxed mode)');
+    this.minQuality = 'B';
+    signalLogger.info('StrategyDetector initialized (min quality: B, C+ gated at R:R 2.5+)');
   }
 
-  /**
-   * Run all detectors and return best valid setup
-   * RELAXED: Collects all valid setups, returns best by quality + R:R
-   */
   detect(analysis) {
     const { price, levels } = analysis;
     
@@ -39,10 +38,10 @@ export class StrategyDetector {
 
     const validSetups = [];
 
-    for (const detector of this.detectors) {
+    for (const detector of DETECTORS) {
       try {
         const setup = detector(analysis);
-        if (setup && this.qualityRank(setup.quality) >= this.qualityRank(this.minQuality)) {
+        if (setup && this._isValidQuality(setup)) {
           validSetups.push(setup);
         }
       } catch (err) {
@@ -52,24 +51,36 @@ export class StrategyDetector {
 
     if (validSetups.length === 0) return null;
 
-    // Return best setup: quality first, then R:R as tiebreaker
+    // Sort by quality tier, then by R:R
     validSetups.sort((a, b) => {
-      const qualityDiff = this.qualityRank(b.quality) - this.qualityRank(a.quality);
+      const qualityDiff = this._qualityRank(b.quality) - this._qualityRank(a.quality);
       if (qualityDiff !== 0) return qualityDiff;
       return b.rr - a.rr;
     });
 
-    // If best is C+ but R:R is excellent (>3), bump quality note
-    const best = validSetups[0];
-    if (best.quality === 'C+' && best.rr >= 3) {
-      best.quality = 'B';
-      best.note = (best.note || '') + ' [upgraded: excellent R:R]';
+    return validSetups[0];
+  }
+
+  /**
+   * Quality gate: B+ passes freely, C+ only if R:R >= 2.5
+   */
+  _isValidQuality(setup) {
+    const rank = this._qualityRank(setup.quality);
+    const minRank = this._qualityRank(this.minQuality);
+
+    // B or above: always pass
+    if (rank >= minRank) return true;
+
+    // C+: pass only with excellent R:R (reward compensates for lower quality)
+    if (setup.quality === 'C+' && setup.rr >= CPLUS_MIN_RR) {
+      return true;
     }
 
-    return best;
+    // Everything else (C, D): reject
+    return false;
   }
 
-  qualityRank(q) {
+  _qualityRank(q) {
     return QUALITY_RANK[q] || 0;
   }
-}
+      }
