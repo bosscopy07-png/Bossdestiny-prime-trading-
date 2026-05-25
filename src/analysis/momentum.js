@@ -7,6 +7,8 @@ import { calculateEMA } from '../utils/math.js';
 
 /**
  * Calculate RSI with trend and condition
+ * @param {number[]} prices - Close prices
+ * @param {number} period - RSI period (default 14)
  */
 export function calculateRSI(prices, period = 14) {
   if (!prices || prices.length < period + 5) {
@@ -47,8 +49,8 @@ export function calculateRSI(prices, period = 14) {
   const prevRSI = rsiValues[rsiValues.length - 3] || currentRSI;
   
   let condition = 'neutral';
-  if (currentRSI > 65) condition = 'overbought';
-  else if (currentRSI < 35) condition = 'oversold';
+  if (currentRSI > 70) condition = 'overbought';
+  else if (currentRSI < 30) condition = 'oversold';
   else if (currentRSI > 55) condition = 'bullish';
   else if (currentRSI < 45) condition = 'bearish';
 
@@ -61,30 +63,56 @@ export function calculateRSI(prices, period = 14) {
 }
 
 /**
- * Detect RSI divergence (bullish/bearish)
+ * Detect RSI divergence using swing points
+ * @param {number[]} prices 
+ * @param {number[]} rsiValues 
  */
 function detectRSIDivergence(prices, rsiValues) {
   if (prices.length < 15 || rsiValues.length < 15) {
     return { bullish: false, bearish: false, strength: 0 };
   }
 
-  const p1 = prices[prices.length - 10];
-  const p2 = prices[prices.length - 1];
-  const r1 = rsiValues[rsiValues.length - 10];
-  const r2 = rsiValues[rsiValues.length - 1];
+  // Find swing points in last 15 candles
+  let priceLowIdx = prices.length - 15;
+  let priceHighIdx = prices.length - 15;
+  let rsiLowIdx = rsiValues.length - 15;
+  let rsiHighIdx = rsiValues.length - 15;
 
-  const bullish = p2 < p1 && r2 > r1 && r2 < 70 && r1 < 60;
-  const bearish = p2 > p1 && r2 < r1 && r2 > 30 && r1 > 40;
+  for (let i = prices.length - 14; i < prices.length; i++) {
+    if (prices[i] < prices[priceLowIdx]) priceLowIdx = i;
+    if (prices[i] > prices[priceHighIdx]) priceHighIdx = i;
+    if (rsiValues[i - (prices.length - rsiValues.length)] < rsiValues[rsiLowIdx]) rsiLowIdx = i - (prices.length - rsiValues.length);
+    if (rsiValues[i - (prices.length - rsiValues.length)] > rsiValues[rsiHighIdx]) rsiHighIdx = i - (prices.length - rsiValues.length);
+  }
+
+  const pLow = prices[priceLowIdx];
+  const pHigh = prices[priceHighIdx];
+  const rLow = rsiValues[rsiLowIdx];
+  const rHigh = rsiValues[rsiHighIdx];
+
+  const pPrevLow = prices[priceLowIdx - 5] || pLow;
+  const pPrevHigh = prices[priceHighIdx - 5] || pHigh;
+  const rPrevLow = rsiValues[rsiLowIdx - 5] || rLow;
+  const rPrevHigh = rsiValues[rsiHighIdx - 5] || rHigh;
+
+  // Bullish divergence: price makes lower low, RSI makes higher low
+  const bullish = pLow < pPrevLow && rLow > rPrevLow && rLow < 60 && rPrevLow < 60;
+  // Bearish divergence: price makes higher high, RSI makes lower high
+  const bearish = pHigh > pPrevHigh && rHigh < rPrevHigh && rHigh > 40 && rPrevHigh > 40;
 
   return {
     bullish,
     bearish,
-    strength: Math.abs(r2 - r1),
+    strength: Math.abs(rHigh - rLow),
   };
 }
 
 /**
  * Calculate MACD with histogram analysis
+ * @param {number[]} prices - Close prices
+ * @param {number} fast - Fast EMA period
+ * @param {number} slow - Slow EMA period
+ * @param {number} signal - Signal EMA period
  */
 export function calculateMACD(prices, fast = 12, slow = 26, signal = 9) {
   if (!prices || prices.length < slow + signal) return null;
@@ -110,11 +138,19 @@ export function calculateMACD(prices, fast = 12, slow = 26, signal = 9) {
   const prevHist = histogram[histogram.length - 2];
   const prevPrevHist = histogram[histogram.length - 3] || prevHist;
   
+  // FIX: Improved trend detection for histogram
   let trend = 'neutral';
-  if (currentHist > prevHist && currentHist > 0) trend = 'bullish';
-  else if (currentHist < prevHist && currentHist < 0) trend = 'bearish';
-  else if (currentHist > 0) trend = 'weak_bullish';
-  else if (currentHist < 0) trend = 'weak_bearish';
+  if (currentHist > 0 && currentHist > prevHist) {
+    trend = 'bullish';
+  } else if (currentHist > 0 && currentHist <= prevHist) {
+    trend = 'weak_bullish';
+  } else if (currentHist < 0 && currentHist < prevHist) {
+    trend = 'bearish';
+  } else if (currentHist < 0 && currentHist >= prevHist) {
+    trend = 'weak_bearish';
+  } else if (currentHist === 0) {
+    trend = 'neutral';
+  }
 
   // Crossover detection
   let crossover = 'none';
