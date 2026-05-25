@@ -1,9 +1,10 @@
 // ==========================================
 // TELEGRAM BOT INTERFACE
-// Main bot class with event wiring — v4.0
+// Main bot class with event wiring — v4.1
+// FIX: Auto-recovery scanner, persistent run state, NEW DAY at 7:00 AM
 // ==========================================
 
-import { Telegraf } from 'telegraf';
+import { Telegraf, Markup } from 'telegraf';
 import { CONFIG } from '../config/index.js';
 import { botLogger } from '../utils/logger.js';
 import { formatPage1, formatPage2, formatClosed, getPage1Markup } from '../signals/formatter.js';
@@ -11,6 +12,14 @@ import { registerCommands } from './commands.js';
 import { registerActions } from './actions.js';
 import { MarketDataEngine } from '../exchange/marketData.js';
 import { SignalGenerator } from '../signals/generator.js';
+
+// Recovery interval: check if scanner should be running (ms)
+const SCANNER_RECOVERY_INTERVAL = 60000; // 1 minute
+// New day check interval
+const NEW_DAY_CHECK_INTERVAL = 300000; // 5 minutes
+
+// NEW: Day reset hour (7:00 AM)
+const DAY_RESET_HOUR = 7;
 
 export class SignalAlphaBot {
   constructor() {
@@ -25,6 +34,14 @@ export class SignalAlphaBot {
     this.generator = new SignalGenerator(this.marketData);
     this.userSettings = new Map();
     this.handlersRegistered = false;
+
+    // FIX: Persistent scanner intent — true = should be running, false = manually stopped
+    this.scannerShouldRun = process.env.AUTO_START_SCAN === 'true';
+    this.scannerRecoveryTimer = null;
+    this.newDayCheckTimer = null;
+    
+    // FIX: Track the last "day key" that includes the 7 AM threshold
+    this.lastDayKey = this._getDayKey();
 
     this._setupMiddleware();
     this._setupEvents();
@@ -45,7 +62,12 @@ export class SignalAlphaBot {
     this.generator.on('signal', (signal) => this._handleNewSignal(signal));
     this.generator.on('signal_closed', (data) => this._handleSignalClose(data));
     this.generator.on('scanning_started', () => this._broadcastToAdmins('🔥 Live scanning activated'));
-    this.generator.on('scanning_stopped', () => this._broadcastToAdmins('⏹️ Scanning stopped'));
+    this.generator.on('scanning_stopped', () => {
+      // Only broadcast if manually stopped (not from daily limit pause)
+      if (!this.scannerShouldRun) {
+        this._broadcastToAdmins('⏹️ Scanning stopped');
+      }
+    });
   }
 
   _registerHandlers() {
@@ -57,6 +79,84 @@ export class SignalAlphaBot {
     registerActions(this.bot, this.generator, this.marketData, this.userSettings);
     this.handlersRegistered = true;
     botLogger.info('Bot handlers registered');
+  }
+
+  /**
+   * FIX: Generate day key based on 7:00 AM threshold
+   * Before 7 AM = previous day. After 7 AM = current day.
+   */
+  _getDayKey() {
+    const now = new Date();
+    const hour = now.getHours();
+    
+    // If before 7 AM, we're still in "yesterday's" trading day
+    if (hour < DAY_RESET_HOUR) {
+      // Subtract one day
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      return yesterday.toISOString().slice(0, 10);
+    }
+    
+    return now.toISOString().slice(0, 10);
+  }
+
+  /**
+   * FIX: Start recovery timers for scanner auto-resume
+   */
+  _startRecoveryTimers() {
+    // Timer 1: If scanner should run but isn't, restart it
+    this.scannerRecoveryTimer = setInterval(() => {
+      if (this.scannerShouldRun && !this.generator.isScanning) {
+        botLogger.info('Recovery: Scanner should be running but is stopped — restarting...');
+        this.generator.startContinuousScanning().catch(err => {
+          botLogger.error({ err: err.message }, 'Scanner recovery failed');
+        });
+      }
+    }, SCANNER_RECOVERY_INTERVAL);
+
+    // Timer 2: Check for new day at 7 AM and reset daily counters
+    this.newDayCheckTimer = setInterval(() => {
+      this._checkNewDay();
+    }, NEW_DAY_CHECK_INTERVAL);
+  }
+
+  /**
+   * FIX: Detect new day at 7:00 AM and reset state
+   */
+  _checkNewDay() {
+    const currentDayKey = this._getDayKey();
+    
+    if (this.lastDayKey && this.lastDayKey !== currentDayKey) {
+      botLogger.info(`New trading day detected: ${currentDayKey} (was ${this.lastDayKey})`);
+      
+      // Reset generator daily state
+      this.generator.scanStats.signalsToday = 0;
+      this.generator._recentScans.clear();
+      
+      // If scanner should be running, ensure it starts
+      if (this.scannerShouldRun && !this.generator.isScanning) {
+        botLogger.info('New day at 7 AM: Auto-starting scanner...');
+        this.generator.startContinuousScanning().catch(err => {
+          botLogger.error({ err: err.message }, 'New day auto-start failed');
+        });
+      }
+    }
+    
+    this.lastDayKey = currentDayKey;
+  }
+
+  /**
+   * FIX: Stop all recovery timers
+   */
+  _stopRecoveryTimers() {
+    if (this.scannerRecoveryTimer) {
+      clearInterval(this.scannerRecoveryTimer);
+      this.scannerRecoveryTimer = null;
+    }
+    if (this.newDayCheckTimer) {
+      clearInterval(this.newDayCheckTimer);
+      this.newDayCheckTimer = null;
+    }
   }
 
   async start() {
@@ -79,7 +179,14 @@ export class SignalAlphaBot {
       botLogger.info('Step 3: Launching Telegram bot...');
       await this.bot.launch();
       
-      if (process.env.AUTO_START_SCAN === 'true') {
+      // FIX: Initialize day tracking with 7 AM threshold
+      this.lastDayKey = this._getDayKey();
+      
+      // FIX: Start recovery timers before auto-start
+      this._startRecoveryTimers();
+      
+      // FIX: Auto-start with persistent intent
+      if (this.scannerShouldRun) {
         botLogger.info('Auto-starting scanner in 10s...');
         setTimeout(() => {
           this.generator.startContinuousScanning().catch(err => {
@@ -88,7 +195,7 @@ export class SignalAlphaBot {
         }, 10000);
       }
       
-      botLogger.info('SignalAlpha v4.0 is LIVE!');
+      botLogger.info('SignalAlpha v4.1 is LIVE! (Day reset at 7:00 AM)');
       
     } catch (err) {
       botLogger.error({ err: err.message, stack: err.stack }, 'Startup failed');
@@ -99,8 +206,25 @@ export class SignalAlphaBot {
     process.once('SIGTERM', () => this.shutdown('SIGTERM'));
   }
 
+  /**
+   * FIX: Explicit scanner control commands
+   */
+  async startScanner() {
+    this.scannerShouldRun = true;
+    botLogger.info('Scanner intent set to RUN');
+    
+    if (!this.generator.isScanning) {
+      await this.generator.startContinuousScanning();
+    }
+  }
+
+  async stopScanner() {
+    this.scannerShouldRun = false;
+    botLogger.info('Scanner intent set to STOP');
+    this.generator.stopScanning();
+  }
+
   async _handleNewSignal(signal) {
-    // Send Page 1 with navigation to admins
     for (const adminId of CONFIG.ADMIN_IDS) {
       try {
         await this.bot.telegram.sendMessage(adminId, formatPage1(signal), {
@@ -117,7 +241,6 @@ export class SignalAlphaBot {
   async _handleSignalClose(data) {
     const { signal, result, exitPrice, pnl, pnlPct } = data;
     
-    // Use the proper formatter for closed signals
     const text = formatClosed(signal, result, exitPrice, pnl, pnlPct);
 
     for (const adminId of CONFIG.ADMIN_IDS) {
@@ -151,6 +274,9 @@ export class SignalAlphaBot {
   shutdown(signal) {
     botLogger.info(`Shutting down (${signal})...`);
     
+    // FIX: Clean up recovery timers
+    this._stopRecoveryTimers();
+
     try {
       this.generator.stopScanning();
     } catch (err) {
