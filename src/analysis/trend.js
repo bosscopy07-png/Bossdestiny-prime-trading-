@@ -33,40 +33,51 @@ export function analyzeTrend(ohlcv) {
   const ema50Current = ema50[ema50.length - 1];
   const ema200Current = ema200?.[ema200.length - 1];
 
-  // Price action patterns
-  const higherHighs = countHigherHighs(highs.slice(-20));
-  const higherLows = countHigherLows(lows.slice(-20));
-  const lowerHighs = countLowerHighs(highs.slice(-20));
-  const lowerLows = countLowerLows(lows.slice(-20));
+  // Price action patterns (last 20 candles)
+  const recentHighs = highs.slice(-20);
+  const recentLows = lows.slice(-20);
 
-  // Scoring
+  const higherHighs = countHigherHighs(recentHighs);
+  const higherLows = countHigherLows(recentLows);
+  const lowerHighs = countLowerHighs(recentHighs);
+  const lowerLows = countLowerLows(recentLows);
+
+  // Scoring (max 4 points)
   let bullishScore = 0;
   let bearishScore = 0;
 
   if (ema20Current > ema50Current) bullishScore += 1;
-  if (ema20Current < ema50Current) bearishScore += 1;
+  else if (ema20Current < ema50Current) bearishScore += 1;
   
   if (higherHighs > lowerHighs && higherLows > lowerLows) bullishScore += 1;
-  if (lowerHighs > higherHighs && lowerLows > higherLows) bearishScore += 1;
+  else if (lowerHighs > higherHighs && lowerLows > higherLows) bearishScore += 1;
   
   if (currentPrice > ema50Current) bullishScore += 1;
-  if (currentPrice < ema50Current) bearishScore += 1;
+  else if (currentPrice < ema50Current) bearishScore += 1;
+
+  // FIX: Add ema200 alignment as 4th point when available
+  if (ema200Current) {
+    if (currentPrice > ema200Current) bullishScore += 1;
+    else bearishScore += 1;
+  }
 
   let primary = 'neutral';
   let strength = 0;
   let alignment = false;
 
-  if (bullishScore >= 2) {
+  const maxScore = ema200Current ? 4 : 3;
+
+  if (bullishScore >= Math.ceil(maxScore / 2)) {
     primary = 'bullish';
-    strength = Math.round((bullishScore / 3) * 100);
+    strength = Math.round((bullishScore / maxScore) * 100);
     alignment = ema200Current ? currentPrice > ema200Current : true;
-  } else if (bearishScore >= 2) {
+  } else if (bearishScore >= Math.ceil(maxScore / 2)) {
     primary = 'bearish';
-    strength = Math.round((bearishScore / 3) * 100);
+    strength = Math.round((bearishScore / maxScore) * 100);
     alignment = ema200Current ? currentPrice < ema200Current : true;
   }
 
-  // EMA slope as momentum indicator
+  // EMA slope as momentum indicator (5-period change %)
   const slope = ema20.length > 5 
     ? ((ema20Current - ema20[ema20.length - 5]) / ema20Current) * 100 
     : 0;
