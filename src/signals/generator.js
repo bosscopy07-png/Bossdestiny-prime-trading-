@@ -1,9 +1,3 @@
-// ==========================================
-// REAL-TIME SIGNAL GENERATOR
-// Orchestrates analysis, scoring, and signal creation
-// VERSION: 3.3-community — Swing-focused, community-grade
-// ==========================================
-
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { CONFIG } from '../config/index.js';
@@ -44,13 +38,16 @@ export class SignalGenerator extends EventEmitter {
       scansCompleted: 0,
     };
     
+    // Anti-correlation tracking
+    this.lastSignalDirection = null;
+    this.consecutiveSameDirection = 0;
+    
     this._todayKey = getTodayKey();
     this._recentScans = new Map();
     
     signalLogger.info('SignalGenerator initialized v3.3-community');
   }
-
-  async analyzeSymbol(symbol, force = false) {
+    async analyzeSymbol(symbol, force = false) {
     if (!symbol) {
       signalLogger.debug('No symbol provided');
       return null;
@@ -66,9 +63,12 @@ export class SignalGenerator extends EventEmitter {
     signalLogger.info(`Normalized: ${normalizedSymbol}`);
 
     try {
+      // ─── FETCH CORE TIMEFRAMES ──────────────────────────────
       signalLogger.info(`[${normalizedSymbol}] Fetching 15m OHLCV...`);
       const m15 = await withTimeout(
-        this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100), 8000, `OHLCV 15m ${normalizedSymbol}`
+        this.marketData.fetchOHLCV(normalizedSymbol, '15m', 100), 
+        8000, 
+        `OHLCV 15m ${normalizedSymbol}`
       );
       signalLogger.info(`[${normalizedSymbol}] 15m result: ${m15 ? m15.length + ' candles' : 'NULL'}`);
       if (!m15 || m15.length < 20) {
@@ -79,7 +79,9 @@ export class SignalGenerator extends EventEmitter {
 
       signalLogger.info(`[${normalizedSymbol}] Fetching 1h OHLCV...`);
       const h1 = await withTimeout(
-        this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80), 8000, `OHLCV 1h ${normalizedSymbol}`
+        this.marketData.fetchOHLCV(normalizedSymbol, '1h', 80), 
+        8000, 
+        `OHLCV 1h ${normalizedSymbol}`
       );
       signalLogger.info(`[${normalizedSymbol}] 1h result: ${h1 ? h1.length + ' candles' : 'NULL'}`);
       if (!h1 || h1.length < 10) {
@@ -88,10 +90,15 @@ export class SignalGenerator extends EventEmitter {
       }
       await sleep(200);
 
+      // ─── FETCH OPTIONAL TIMEFRAMES ───────────────────────────
       let m5 = null;
       try {
         signalLogger.info(`[${normalizedSymbol}] Fetching 5m OHLCV (optional)...`);
-        m5 = await withTimeout(this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100), 5000, `OHLCV 5m ${normalizedSymbol}`);
+        m5 = await withTimeout(
+          this.marketData.fetchOHLCV(normalizedSymbol, '5m', 100), 
+          5000, 
+          `OHLCV 5m ${normalizedSymbol}`
+        );
         signalLogger.info(`[${normalizedSymbol}] 5m result: ${m5 ? m5.length + ' candles' : 'NULL'}`);
       } catch (e) {
         signalLogger.info(`[${normalizedSymbol}] 5m fetch failed (optional): ${e.message}`);
@@ -101,18 +108,27 @@ export class SignalGenerator extends EventEmitter {
       let h4 = null;
       try {
         signalLogger.info(`[${normalizedSymbol}] Fetching 4h OHLCV (optional)...`);
-        h4 = await withTimeout(this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50), 5000, `OHLCV 4h ${normalizedSymbol}`);
+        h4 = await withTimeout(
+          this.marketData.fetchOHLCV(normalizedSymbol, '4h', 50), 
+          5000, 
+          `OHLCV 4h ${normalizedSymbol}`
+        );
         signalLogger.info(`[${normalizedSymbol}] 4h result: ${h4 ? h4.length + ' candles' : 'NULL'}`);
       } catch (e) {
         signalLogger.info(`[${normalizedSymbol}] 4h fetch failed (optional): ${e.message}`);
       }
 
+      // ─── FETCH CURRENT PRICE ──────────────────────────────────
       signalLogger.info(`[${normalizedSymbol}] Fetching current price...`);
       let currentPrice = null;
       let retries = 2;
       while (retries > 0 && !currentPrice) {
         try {
-          currentPrice = await withTimeout(this.marketData.getCurrentPrice(normalizedSymbol), 5000, `price ${normalizedSymbol}`);
+          currentPrice = await withTimeout(
+            this.marketData.getCurrentPrice(normalizedSymbol), 
+            5000, 
+            `price ${normalizedSymbol}`
+          );
         } catch (e) {
           signalLogger.info(`[${normalizedSymbol}] Price fetch attempt failed: ${e.message}`);
         }
@@ -131,10 +147,15 @@ export class SignalGenerator extends EventEmitter {
         return null;
       }
 
+      // ─── FETCH 24H VOLUME ─────────────────────────────────────
       signalLogger.info(`[${normalizedSymbol}] Fetching 24h volume...`);
       let volume24h = 0;
       try {
-        volume24h = await withTimeout(this.marketData.get24hVolume(normalizedSymbol), 5000, `volume ${normalizedSymbol}`);
+        volume24h = await withTimeout(
+          this.marketData.get24hVolume(normalizedSymbol), 
+          5000, 
+          `volume ${normalizedSymbol}`
+        );
       } catch (e) {
         signalLogger.info(`[${normalizedSymbol}] Volume fetch failed: ${e.message}`);
       }
@@ -145,6 +166,7 @@ export class SignalGenerator extends EventEmitter {
         return null;
       }
 
+      // ─── RUN TECHNICAL ANALYSIS ─────────────────────────────
       signalLogger.info(`[${normalizedSymbol}] Running timeframe analysis...`);
       const analysis15m = runTimeframeAnalysis(m15, '15m');
       const analysis1h = runTimeframeAnalysis(h1, '1h');
@@ -161,6 +183,7 @@ export class SignalGenerator extends EventEmitter {
       signalLogger.info(`[${normalizedSymbol}] Building multi-timeframe confluence...`);
       const multiTimeframe = buildMultiTimeframe(analysis15m, analysis1h, analysis4h);
 
+      // ─── FETCH BTC TREND ────────────────────────────────────
       signalLogger.info(`[${normalizedSymbol}] Fetching BTC trend...`);
       let btcTrend = { primary: 'neutral', strength: 0, volatile: false };
       try {
@@ -172,6 +195,7 @@ export class SignalGenerator extends EventEmitter {
 
       const primary = analysis15m;
 
+      // ─── DETECT STRATEGY SETUP ──────────────────────────────
       signalLogger.info(`[${normalizedSymbol}] Detecting strategy setup...`);
       const setup = this.strategy.detect({
         ...primary,
@@ -206,6 +230,7 @@ export class SignalGenerator extends EventEmitter {
         ohlcv: m15,
       };
 
+      // ─── CALCULATE CONFIDENCE ───────────────────────────────
       signalLogger.info(`[${normalizedSymbol}] Calculating confidence score...`);
       const confidence = this.confidence.calculate(fullAnalysis);
 
@@ -426,8 +451,22 @@ export class SignalGenerator extends EventEmitter {
     const analysis = await this.analyzeSymbol(symbol, force);
     if (!analysis) return null;
 
-    // COMMUNITY GATE: Minimum standards for public signals
-    const MIN_CONFIDENCE = 40;
+    // ─── ANTI-CORRELATION: Prevent consecutive same-direction signals ─
+    if (analysis.setup.direction === this.lastSignalDirection) {
+      this.consecutiveSameDirection++;
+      if (this.consecutiveSameDirection >= 2) {
+        if (analysis.confidence.score < 70) {
+          signalLogger.info(`REJECTED: ${symbol} — ${analysis.setup.direction} #${this.consecutiveSameDirection + 1}, need 70%+`);
+          return null;
+        }
+      }
+    } else {
+      this.consecutiveSameDirection = 0;
+    }
+    this.lastSignalDirection = analysis.setup.direction;
+
+    // ─── COMMUNITY GATE: Minimum standards for public signals ─
+    const MIN_CONFIDENCE = 60;
     const MIN_VOLUME = 0.8;
     const MIN_RR = 1.8;
 
@@ -478,7 +517,7 @@ export class SignalGenerator extends EventEmitter {
     return signal;
   }
 
-async startContinuousScanning() {
+  async startContinuousScanning() {
     if (this.isScanning) {
       signalLogger.warn('Scanning already active');
       return;
@@ -613,7 +652,7 @@ async startContinuousScanning() {
   _wasRecentlyScanned(symbol) {
     const lastScan = this._recentScans.get(symbol);
     if (!lastScan) return false;
-    return Date.now() - lastScan < 120000; // 10 minutes
+    return Date.now() - lastScan < 120000;
   }
 
   _markScanned(symbol) {
@@ -651,4 +690,4 @@ async startContinuousScanning() {
       riskStatus: this.riskManager.getStatus(),
     };
   }
-  }
+}
