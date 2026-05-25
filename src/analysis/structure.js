@@ -98,8 +98,9 @@ export function detectLiquiditySweep(ohlcv, levels) {
   const lastCandle = ohlcv[ohlcv.length - 1];
   const prevCandle = ohlcv[ohlcv.length - 2];
 
-  const [_, h1, l1, c1] = [lastCandle[1], lastCandle[2], lastCandle[3], lastCandle[4]];
-  const [__, h2, l2, c2] = [prevCandle[1], prevCandle[2], prevCandle[3], prevCandle[4]];
+  // FIX: Capture open prices (o1, o2) — they were used but never defined
+  const [o1, h1, l1, c1] = [lastCandle[1], lastCandle[2], lastCandle[3], lastCandle[4]];
+  const [o2, h2, l2, c2] = [prevCandle[1], prevCandle[2], prevCandle[3], prevCandle[4]];
 
   // Strong sweep: Wick beyond level, close back above/below
   const bullishSweep = l2 < levels.support && c1 > levels.support && c1 > o1;
