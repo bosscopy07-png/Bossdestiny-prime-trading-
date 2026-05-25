@@ -12,6 +12,8 @@ import { calculateATR } from '../utils/math.js';
 
 /**
  * Run full analysis on single timeframe
+ * @param {number[][]} ohlcv 
+ * @param {string} timeframe 
  */
 export function runTimeframeAnalysis(ohlcv, timeframe = '15m') {
   if (!ohlcv || ohlcv.length < 30) return null;
@@ -50,6 +52,9 @@ export function runTimeframeAnalysis(ohlcv, timeframe = '15m') {
 
 /**
  * Build multi-timeframe confluence object
+ * @param {object} primary - 15m analysis
+ * @param {object} higher - 1h analysis
+ * @param {object|null} fourHour - 4h analysis (optional)
  */
 export function buildMultiTimeframe(primary, higher, fourHour = null) {
   const alignment = primary?.trend?.primary === higher?.trend?.primary && 
