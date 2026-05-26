@@ -1,11 +1,58 @@
+// ==========================================
+// CONFIDENCE SCORING ENGINE
+// Multi-factor weighted scoring 0-100
+// VERSION: 3.4 — NaN-hardened, fully guarded
+// ==========================================
+
 import { CONFIG } from '../config/index.js';
 import { clamp } from '../utils/math.js';
 import { signalLogger } from '../utils/logger.js';
 
+const QUALITY_RANK = { 'A+': 5, 'A': 4, 'A-': 3.5, 'B+': 3, 'B': 2, 'C+': 1 };
+
 /**
- * ConfidenceEngine — Multi-factor weighted scoring 0-100
- * Evaluates signal quality across trend, momentum, volume, structure, volatility, BTC alignment
+ * Safely add to score, log if NaN detected
  */
+function safeAdd(score, value, context) {
+  const numValue = Number(value) || 0;
+  if (isNaN(value)) {
+    signalLogger.warn(`Confidence NaN detected in: ${context}`);
+    return score; // Skip NaN, don't poison score
+  }
+  return score + numValue;
+}
+
+/**
+ * Validate and sanitize confidence result
+ */
+function sanitizeConfidence(raw) {
+  let { score, tier, passed, confidence, recommendation } = raw;
+  
+  // Hard guard: any NaN = invalid signal
+  if (isNaN(score) || score === null || score === undefined) {
+    signalLogger.warn(`Confidence score invalid (${score}), forcing rejection`);
+    score = 0;
+    tier = 'D';
+    passed = false;
+    confidence = 'low';
+    recommendation = 'Invalid signal — calculation error';
+  }
+  
+  // Ensure score is integer 0-100
+  score = Math.max(0, Math.min(100, Math.round(Number(score) || 0)));
+  
+  // Re-evaluate tier based on sanitized score
+  if (score >= 75) { tier = 'A+'; passed = true; confidence = 'high'; recommendation = 'Strong signal — Full size'; }
+  else if (score >= 65) { tier = 'A'; passed = true; confidence = 'high'; recommendation = 'Good signal — Full size'; }
+  else if (score >= 55) { tier = 'B+'; passed = true; confidence = 'medium'; recommendation = 'Moderate signal — Standard size'; }
+  else if (score >= 45) { tier = 'B'; passed = true; confidence = 'medium'; recommendation = 'Marginal signal — Reduce size 25%'; }
+  else if (score >= 35) { tier = 'C+'; passed = false; confidence = 'low'; recommendation = 'Weak signal — Reduce size 50%'; }
+  else if (score >= 25) { tier = 'C'; passed = false; confidence = 'low'; recommendation = 'Avoid — Paper trade only'; }
+  else { tier = 'D'; passed = false; confidence = 'low'; recommendation = 'No trade'; }
+  
+  return { ...raw, score, tier, passed, confidence, recommendation };
+}
+
 export class ConfidenceEngine {
   constructor() {
     this.weights = {
@@ -16,7 +63,7 @@ export class ConfidenceEngine {
       volatility: 10,
       btcAlignment: 15,
     };
-    signalLogger.info('ConfidenceEngine initialized (relaxed mode)');
+    signalLogger.info('ConfidenceEngine v3.4 initialized (NaN-hardened)');
   }
 
   calculate(analysis) {
@@ -27,134 +74,125 @@ export class ConfidenceEngine {
 
     const { trend, multiTimeframe, momentum, volume, structure, levels, atr, btcTrend, setup } = analysis;
 
-    // ─── 1. TREND ANALYSIS (0-20) ─────────────────────────────
-    const { trend: trendScore, trendDetails, trendPenalties } = this._scoreTrend(trend, multiTimeframe, volume);
-    score += trendScore;
-    details.push(...trendDetails);
-    penalties.push(...trendPenalties);
+    // ─── GUARD: Required fields ───────────────────────────────
+    if (!setup || typeof setup.rr !== 'number' || !isFinite(setup.rr)) {
+      signalLogger.warn('ConfidenceEngine: Invalid setup object');
+      return this._reject('Invalid setup — missing R:R');
+    }
 
-    if (Math.abs(trend?.slope || 0) > 0.05) {
-      score += 2;
+    const rr = setup.rr;
+
+    // ─── 1. TREND ANALYSIS (0-20) ─────────────────────────────
+    const trendResult = this._scoreTrend(trend, multiTimeframe, volume);
+    score = safeAdd(score, trendResult.score, 'trend');
+    details.push(...(trendResult.details || []));
+    penalties.push(...(trendResult.penalties || []));
+
+    if (Math.abs(Number(trend?.slope) || 0) > 0.05) {
+      score = safeAdd(score, 2, 'EMA slope bonus');
       bonuses.push('EMA slope (+2)');
     }
 
     // ─── 2. MOMENTUM CONFLUENCE (0-20) ─────────────────────────
-    const { momentumScore, momentumDetails, momentumBonuses } = this._scoreMomentum(momentum);
-    score += momentumScore;
-    details.push(...momentumDetails);
-    bonuses.push(...momentumBonuses);
+    const momentumResult = this._scoreMomentum(momentum);
+    score = safeAdd(score, momentumResult.score, 'momentum');
+    details.push(...(momentumResult.details || []));
+    bonuses.push(...(momentumResult.bonuses || []));
 
     // ─── 3. VOLUME CONFIRMATION (0-15) ─────────────────────────
-    const { volumeScore, volumeDetails, volumeBonuses, volumePenalties } = this._scoreVolume(volume);
-    score += volumeScore;
-    details.push(...volumeDetails);
-    bonuses.push(...volumeBonuses);
-    penalties.push(...volumePenalties);
+    const volumeResult = this._scoreVolume(volume);
+    score = safeAdd(score, volumeResult.score, 'volume');
+    details.push(...(volumeResult.details || []));
+    bonuses.push(...(volumeResult.bonuses || []));
+    penalties.push(...(volumeResult.penalties || []));
 
     // ─── 4. STRUCTURE CLARITY (0-20) ──────────────────────────
-    const { structureScore, structureDetails, structureBonuses } = this._scoreStructure(structure, levels);
-    score += structureScore;
-    details.push(...structureDetails);
-    bonuses.push(...structureBonuses);
+    const structureResult = this._scoreStructure(structure, levels);
+    score = safeAdd(score, structureResult.score, 'structure');
+    details.push(...(structureResult.details || []));
+    bonuses.push(...(structureResult.bonuses || []));
 
     // ─── 5. VOLATILITY QUALITY (0-10) ─────────────────────────
-    const { volScore, volDetails, volPenalties } = this._scoreVolatility(atr);
-    score += volScore;
-    details.push(...volDetails);
-    penalties.push(...volPenalties);
+    const volResult = this._scoreVolatility(atr);
+    score = safeAdd(score, volResult.score, 'volatility');
+    details.push(...(volResult.details || []));
+    penalties.push(...(volResult.penalties || []));
 
     // ─── 6. BTC ALIGNMENT (0-15) ──────────────────────────────
-    const { btcScore, btcDetails, btcPenalties } = this._scoreBTC(btcTrend, trend);
-    score += btcScore;
-    details.push(...btcDetails);
-    penalties.push(...btcPenalties);
+    const btcResult = this._scoreBTC(btcTrend, trend);
+    score = safeAdd(score, btcResult.score, 'BTC alignment');
+    details.push(...(btcResult.details || []));
+    penalties.push(...(btcResult.penalties || []));
 
     // ─── CONTEXTUAL BONUSES ───────────────────────────────────
-    const rr = setup?.rr || 0;
     if (rr >= 3) {
-      score += 5;
+      score = safeAdd(score, 5, 'R:R 3+ bonus');
       bonuses.push('Excellent R:R (+5)');
     } else if (rr >= 2) {
-      score += 3;
+      score = safeAdd(score, 3, 'R:R 2+ bonus');
       bonuses.push('Good R:R (+3)');
     }
 
     // ─── PENALTIES ────────────────────────────────────────────
-    if (atr?.percent > 6) {
-      score -= 3;
+    const atrPct = Number(atr?.percent) || 0;
+    if (atrPct > 6) {
+      score = safeAdd(score, -3, 'high vol penalty');
       penalties.push('High vol penalty (-3)');
     }
-    if (volume?.ratio < 0.5) {
-      score -= 3;
+    
+    const volRatio = Number(volume?.ratio) || 0;
+    if (volRatio < 0.5) {
+      score = safeAdd(score, -3, 'very low volume penalty');
       penalties.push('Very low volume (-3)');
     }
+    
     if (multiTimeframe?.higherTF?.primary !== 'neutral' && 
         multiTimeframe?.higherTF?.primary !== trend?.primary &&
-        multiTimeframe?.higherTF?.strength > 50) {
-      score -= 3;
+        Number(multiTimeframe?.higherTF?.strength) > 50) {
+      score = safeAdd(score, -3, 'against strong HTF penalty');
       penalties.push('Against strong HTF (-3)');
     }
 
-    // ─── FINAL SCORE ──────────────────────────────────────────
+    // ─── FINAL SANITIZATION ───────────────────────────────────
     let finalScore = clamp(score, 0, 100);
     finalScore = Math.round(finalScore);
 
-    // ─── TIER ASSIGNMENT ──────────────────────────────────────
-    let tier, passed, confidence, recommendation;
+    // Hard floor: R:R minimum
+    let passed = true;
+    let tier, confidence, recommendation;
 
-    if (finalScore >= 75) {
-      tier = 'A+';
-      passed = true;
-      confidence = 'high';
-      recommendation = 'Strong signal — Full size';
-    } else if (finalScore >= 65) {
-      tier = 'A';
-      passed = true;
-      confidence = 'high';
-      recommendation = 'Good signal — Full size';
-    } else if (finalScore >= 55) {
-      tier = 'B+';
-      passed = true;
-      confidence = 'medium';
-      recommendation = 'Moderate signal — Standard size';
-    } else if (finalScore >= 45) {
-      tier = 'B';
-      passed = true;
-      confidence = 'medium';
-      recommendation = 'Marginal signal — Reduce size 25%';
-    } else if (finalScore >= 35) {
-      tier = 'C+';
-      passed = true;
-      confidence = 'low';
-      recommendation = 'Weak signal — Reduce size 50%';
-    } else if (finalScore >= 25) {
-      tier = 'C';
-      passed = false;
-      confidence = 'low';
-      recommendation = 'Avoid — Paper trade only';
-    } else {
-      tier = 'D';
-      passed = false;
-      confidence = 'low';
-      recommendation = 'No trade';
-    }
-
-    // Hard floor: R:R must be >= 1.5
     if (rr < 1.5) {
       passed = false;
       recommendation = `R:R ${rr.toFixed(2)} too low — Minimum 1.5:1`;
     }
 
-    return {
+    // Build raw result then sanitize
+    const rawResult = {
       score: finalScore,
-      tier,
+      tier: 'D', // placeholder, sanitized below
       passed,
-      confidence,
-      recommendation,
+      confidence: 'low',
+      recommendation: recommendation || '',
       details,
       bonuses,
       penalties,
       breakdown: { total: finalScore },
+    };
+
+    return sanitizeConfidence(rawResult);
+  }
+
+  _reject(reason) {
+    return {
+      score: 0,
+      tier: 'D',
+      passed: false,
+      confidence: 'low',
+      recommendation: reason,
+      details: [reason],
+      bonuses: [],
+      penalties: [],
+      breakdown: { total: 0 },
     };
   }
 
@@ -165,26 +203,33 @@ export class ConfidenceEngine {
     const details = [];
     const penalties = [];
 
-    if (trend?.primary === 'neutral' || trend?.strength < 30) {
-      score += 0;
+    const trendPrimary = trend?.primary || 'neutral';
+    const trendStrength = Number(trend?.strength) || 0;
+    const isAligned = !!multiTimeframe?.alignment;
+
+    if (trendPrimary === 'neutral' || trendStrength < 30) {
       details.push('❌ No trend — require stronger setup (+0)');
       
-      if (volume?.ratio < 2.0) {
-        score -= 10;
+      if (Number(volume?.ratio) < 2.0) {
+        score = safeAdd(score, -10, 'no trend + no volume');
         penalties.push('No trend + no volume (-10)');
       }
-    } else if (multiTimeframe?.alignment && trend?.strength > 60) {
-      score += 22;
+    } else if (isAligned && trendStrength > 60) {
+      score = safeAdd(score, 22, 'strong aligned trend');
       details.push('✅ Strong aligned trend (+22)');
-    } else if (trend?.strength > 40) {
-      score += 14;
+    } else if (trendStrength > 40) {
+      score = safeAdd(score, 14, 'moderate trend');
       details.push('⚡ Moderate trend (+14)');
-    } else if (trend?.primary !== 'neutral') {
-      score += 8;
+    } else if (trendPrimary !== 'neutral') {
+      score = safeAdd(score, 8, 'weak trend');
       details.push('Weak trend (+8)');
     }
 
-    return { trendScore: Math.min(score, 20), trendDetails: details, trendPenalties: penalties };
+    return { 
+      score: Math.min(score, 20), 
+      details, 
+      penalties 
+    };
   }
 
   _scoreMomentum(momentum) {
@@ -192,7 +237,7 @@ export class ConfidenceEngine {
     const details = [];
     const bonuses = [];
 
-    const rsi = momentum?.rsi?.value || 50;
+    const rsi = Number(momentum?.rsi?.value) || 50;
     const macd = momentum?.macd;
     
     let rsiScore = 0;
@@ -211,13 +256,16 @@ export class ConfidenceEngine {
     }
 
     let macdScore = 0;
-    if (macd?.crossover !== 'none') {
+    const macdCrossover = macd?.crossover;
+    const macdTrend = macd?.trend || '';
+    
+    if (macdCrossover && macdCrossover !== 'none') {
       macdScore = 10;
-      details.push(`MACD ${macd.crossover} crossover (+10)`);
-    } else if (macd?.trend?.includes('bullish') || macd?.trend?.includes('bearish')) {
+      details.push(`MACD ${macdCrossover} crossover (+10)`);
+    } else if (macdTrend.includes('bullish') || macdTrend.includes('bearish')) {
       macdScore = 7;
-      details.push(`MACD ${macd.trend} (+7)`);
-    } else if (macd?.momentum > 0.0003) {
+      details.push(`MACD ${macdTrend} (+7)`);
+    } else if (Number(macd?.momentum) > 0.0003) {
       macdScore = 4;
       details.push('Weak MACD (+4)');
     } else {
@@ -225,13 +273,17 @@ export class ConfidenceEngine {
     }
 
     if (momentum?.rsi?.divergence?.bullish || momentum?.rsi?.divergence?.bearish) {
-      score += 3;
+      score = safeAdd(score, 3, 'RSI divergence');
       bonuses.push('RSI divergence (+3)');
     }
 
-    score += rsiScore + macdScore;
+    score = safeAdd(score, rsiScore + macdScore, 'momentum total');
 
-    return { momentumScore: Math.min(score, 20), momentumDetails: details, momentumBonuses: bonuses };
+    return { 
+      score: Math.min(score, 20), 
+      details, 
+      bonuses 
+    };
   }
 
   _scoreVolume(volume) {
@@ -240,28 +292,33 @@ export class ConfidenceEngine {
     const bonuses = [];
     const penalties = [];
 
-    const volRatio = volume?.ratio || 1;
+    const volRatio = Number(volume?.ratio) || 1;
     
     if (volRatio >= 1.5) {
-      score += 13;
+      score = safeAdd(score, 13, 'good volume');
       details.push(`Good volume ${volRatio.toFixed(1)}x (+13)`);
     } else if (volRatio >= 1.2) {
-      score += 10;
+      score = safeAdd(score, 10, 'adequate volume');
       details.push(`Adequate volume ${volRatio.toFixed(1)}x (+10)`);
     } else if (volRatio >= 0.8) {
-      score += 6;
+      score = safeAdd(score, 6, 'normal volume');
       details.push(`Normal volume ${volRatio.toFixed(1)}x (+6)`);
     } else {
-      score += 3;
+      score = safeAdd(score, 3, 'low volume');
       penalties.push(`Low volume ${volRatio.toFixed(1)}x (+3)`);
     }
 
     if (volume?.confirmation || volume?.trend === 'increasing') {
-      score += 2;
+      score = safeAdd(score, 2, 'volume rising');
       bonuses.push('Volume rising (+2)');
     }
 
-    return { volumeScore: Math.min(score, 15), volumeDetails: details, volumeBonuses: bonuses, volumePenalties: penalties };
+    return { 
+      score: Math.min(score, 15), 
+      details, 
+      bonuses, 
+      penalties 
+    };
   }
 
   _scoreStructure(structure, levels) {
@@ -269,29 +326,39 @@ export class ConfidenceEngine {
     const details = [];
     const bonuses = [];
 
-    if (structure?.bos !== 'none' && structure?.strength > 40) {
-      score += 16;
+    const bos = structure?.bos || 'none';
+    const structStrength = Number(structure?.strength) || 0;
+
+    if (bos !== 'none' && structStrength > 40) {
+      score = safeAdd(score, 16, 'structure break');
       details.push(`Structure break (+16)`);
-    } else if (structure?.bos !== 'none') {
-      score += 12;
+    } else if (bos !== 'none') {
+      score = safeAdd(score, 12, 'weak structure break');
       details.push(`Weak structure break (+12)`);
-    } else if (structure?.trending && structure?.strength > 30) {
-      score += 9;
+    } else if (structure?.trending && structStrength > 30) {
+      score = safeAdd(score, 9, 'trending structure');
       details.push('Trending structure (+9)');
     } else if (structure?.consolidation) {
-      score += 6;
+      score = safeAdd(score, 6, 'consolidation');
       details.push('Consolidation (+6)');
     } else {
-      score += 3;
+      score = safeAdd(score, 3, 'unclear structure');
       details.push('Unclear structure (+3)');
     }
 
-    if (levels?.valid && (levels.supportTouches >= 1 || levels.resistanceTouches >= 1)) {
-      score += 4;
+    const supportTouches = Number(levels?.supportTouches) || 0;
+    const resistanceTouches = Number(levels?.resistanceTouches) || 0;
+    
+    if (levels?.valid && (supportTouches >= 1 || resistanceTouches >= 1)) {
+      score = safeAdd(score, 4, 'tested S/R');
       bonuses.push('Tested S/R (+4)');
     }
 
-    return { structureScore: Math.min(score, 20), structureDetails: details, structureBonuses: bonuses };
+    return { 
+      score: Math.min(score, 20), 
+      details, 
+      bonuses 
+    };
   }
 
   _scoreVolatility(atr) {
@@ -299,21 +366,27 @@ export class ConfidenceEngine {
     const details = [];
     const penalties = [];
 
-    if (atr?.percent >= 0.8 && atr?.percent <= 4) {
-      score += 9;
-      details.push(`Healthy vol ${atr.percent}% (+9)`);
-    } else if (atr?.percent >= 0.4 && atr?.percent <= 6) {
-      score += 6;
-      details.push(`Acceptable vol ${atr.percent}% (+6)`);
-    } else if (atr?.percent > 6) {
-      score += 3;
-      penalties.push(`High vol ${atr.percent}% (+3)`);
+    const atrPct = Number(atr?.percent) || 0;
+
+    if (atrPct >= 0.8 && atrPct <= 4) {
+      score = safeAdd(score, 9, 'healthy vol');
+      details.push(`Healthy vol ${atrPct}% (+9)`);
+    } else if (atrPct >= 0.4 && atrPct <= 6) {
+      score = safeAdd(score, 6, 'acceptable vol');
+      details.push(`Acceptable vol ${atrPct}% (+6)`);
+    } else if (atrPct > 6) {
+      score = safeAdd(score, 3, 'high vol');
+      penalties.push(`High vol ${atrPct}% (+3)`);
     } else {
-      score += 4;
-      details.push(`Low vol ${atr.percent}% (+4)`);
+      score = safeAdd(score, 4, 'low vol');
+      details.push(`Low vol ${atrPct}% (+4)`);
     }
 
-    return { volScore: Math.min(score, 10), volDetails: details, volPenalties: penalties };
+    return { 
+      score: Math.min(score, 10), 
+      details, 
+      penalties 
+    };
   }
 
   _scoreBTC(btcTrend, trend) {
@@ -322,30 +395,42 @@ export class ConfidenceEngine {
     const penalties = [];
 
     if (!btcTrend) {
-      return { btcScore: 8, btcDetails: ['BTC data unavailable (+8)'], btcPenalties: penalties };
+      return { 
+        score: 8, 
+        details: ['BTC data unavailable (+8)'], 
+        penalties 
+      };
     }
 
-    if (btcTrend.volatile) {
-      score += 5;
+    const btcPrimary = btcTrend.primary || 'neutral';
+    const btcStrength = Number(btcTrend.strength) || 0;
+    const btcVolatile = !!btcTrend.volatile;
+    const trendPrimary = trend?.primary || 'neutral';
+
+    if (btcVolatile) {
+      score = safeAdd(score, 5, 'BTC volatile');
       penalties.push('BTC volatile (+5)');
-    } else if (btcTrend.primary === trend?.primary && btcTrend.strength > 40) {
-      score += 13;
+    } else if (btcPrimary === trendPrimary && btcStrength > 40) {
+      score = safeAdd(score, 13, 'BTC aligned');
       details.push('BTC aligned (+13)');
-    } else if (btcTrend.primary === 'neutral') {
-      score += 8;
+    } else if (btcPrimary === 'neutral') {
+      score = safeAdd(score, 8, 'BTC neutral');
       details.push('BTC neutral (+8)');
-    } else if (btcTrend.primary !== trend?.primary) {
-      // RELAXED: Only penalize strong BTC opposition
-      if (btcTrend.strength > 70 && btcTrend.volatile) {
-        score += 5;
+    } else if (btcPrimary !== trendPrimary) {
+      if (btcStrength > 70 && btcVolatile) {
+        score = safeAdd(score, 5, 'strong BTC opposition');
         penalties.push('Strong BTC opposition (+5)');
       } else {
-        score += 8;
+        score = safeAdd(score, 8, 'weak BTC opposition');
         details.push('Weak BTC opposition — no penalty (+8)');
       }
     }
 
-    return { btcScore: Math.min(score, 15), btcDetails: details, btcPenalties: penalties };
+    return { 
+      score: Math.min(score, 15), 
+      details, 
+      penalties 
+    };
   }
-  }
-  
+      }
+      
