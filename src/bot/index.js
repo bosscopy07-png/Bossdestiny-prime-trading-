@@ -122,6 +122,7 @@ export class SignalAlphaBot {
 
   /**
    * FIX: Detect new day at 7:00 AM and reset state
+   * BUG FIX: Only update lastDayKey when a new day is actually detected
    */
   _checkNewDay() {
     const currentDayKey = this._getDayKey();
@@ -140,9 +141,11 @@ export class SignalAlphaBot {
           botLogger.error({ err: err.message }, 'New day auto-start failed');
         });
       }
+      
+      // FIX: Only update lastDayKey when day actually changes
+      this.lastDayKey = currentDayKey;
     }
-    
-    this.lastDayKey = currentDayKey;
+    // If day hasn't changed, do nothing — preserve lastDayKey for next comparison
   }
 
   /**
@@ -307,4 +310,4 @@ function escapeHtml(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
+  }
